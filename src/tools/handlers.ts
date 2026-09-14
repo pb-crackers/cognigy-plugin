@@ -375,8 +375,9 @@ function transformConfigForApi(
     }
 
     case "executeFlow": {
-      // Same flowNode shape as goTo, but isGoto:false is what makes the target
-      // flow return here instead of taking the session over.
+      // Same flowNode shape as goTo, minus `isGoto` — that flag belongs to the
+      // executeFlow() *function*; the node always returns, and the API rejects
+      // the field outright ("Field 'isGoto' is not allowed").
       if (config.flowNode) return config;
       const { flowId: targetFlowId, nodeId: targetNodeId, ...rest } = config;
       if (targetFlowId || targetNodeId) {
@@ -384,7 +385,6 @@ function transformConfigForApi(
           flowNode: {
             flow: targetFlowId ?? "",
             node: targetNodeId ?? "",
-            isGoto: false,
           },
           ...rest,
         };
@@ -874,39 +874,72 @@ export class ToolHandlers {
     return result;
   }
 
+  /** Per-flow cache of the resolved error handler, including misses. */
+  private errorHandlerFlowCache = new Map<
+    string,
+    { id: string; referenceId?: string } | null
+  >();
+
   /**
    * Find the project's conventional "Error Handler" flow, if it has one.
    *
-   * Resolved from the flow being edited: flow → projectId → sibling flows.
-   * Returns null rather than throwing — a missing handler flow downgrades the
-   * guard to inline logging, it does not fail the node creation.
+   * Neither `GET /v2.0/flows/{id}` nor the flow list projection returns
+   * `projectId`, so a flow cannot be mapped to its project directly. Instead
+   * the projects are scanned and each one's flow list checked for this flowId
+   * — a handful of calls, cached per flow (misses included) so a burst of node
+   * creations pays for it once.
+   *
+   * Returns null rather than throwing: no handler flow downgrades the guard to
+   * inline logging, it does not fail the node creation.
    */
   private async findErrorHandlerFlow(
     flowId: string,
-    flowName: string = DEFAULT_ERROR_HANDLER_FLOW_NAME,
+    handlerFlowName: string = DEFAULT_ERROR_HANDLER_FLOW_NAME,
   ): Promise<{ id: string; referenceId?: string } | null> {
-    try {
-      const flow: any = await this.apiClient.get(`/v2.0/flows/${flowId}`);
-      const projectId = flow?.projectId;
-      if (!projectId) return null;
+    const cacheKey = `${flowId}::${handlerFlowName}`;
+    const cached = this.errorHandlerFlowCache.get(cacheKey);
+    if (cached !== undefined) return cached;
 
-      const flows: any = await this.apiClient.get(`/v2.0/flows`, {
-        params: { projectId, limit: 100 },
+    let resolved: { id: string; referenceId?: string } | null = null;
+    try {
+      const projects: any = await this.apiClient.get(`/v2.0/projects`, {
+        params: { limit: 100 },
       });
-      const items: any[] = flows?.items ?? flows ?? [];
-      const match = items.find(
-        (f: any) =>
-          typeof f?.name === "string" &&
-          f.name.trim().toLowerCase() === flowName.trim().toLowerCase(),
-      );
-      if (!match) return null;
-      return {
-        id: match._id || match.id,
-        referenceId: match.referenceId,
-      };
+      const projectItems: any[] = projects?.items ?? projects ?? [];
+
+      for (const project of projectItems) {
+        const projectId = project?._id ?? project?.id;
+        if (!projectId) continue;
+
+        const flows: any = await this.apiClient.get(`/v2.0/flows`, {
+          params: { projectId, limit: 100 },
+        });
+        const flowItems: any[] = flows?.items ?? flows ?? [];
+        const containsThisFlow = flowItems.some(
+          (f: any) => (f?._id ?? f?.id) === flowId,
+        );
+        if (!containsThisFlow) continue;
+
+        const match = flowItems.find(
+          (f: any) =>
+            typeof f?.name === "string" &&
+            f.name.trim().toLowerCase() ===
+              handlerFlowName.trim().toLowerCase(),
+        );
+        if (match) {
+          resolved = {
+            id: match._id || match.id,
+            referenceId: match.referenceId,
+          };
+        }
+        break;
+      }
     } catch {
-      return null;
+      resolved = null;
     }
+
+    this.errorHandlerFlowCache.set(cacheKey, resolved);
+    return resolved;
   }
 
   /**
@@ -942,13 +975,20 @@ export class ToolHandlers {
 
     // The `if` node is created with then/else children already in place; the
     // handler goes inside the then branch.
-    const children: any = await this.apiClient.get(
-      `/v2.0/flows/${flowId}/chart/nodes`,
-      { params: { limit: 200 } },
+    //
+    // The parent/child link is only in the chart's `relations`, NOT on the
+    // nodes themselves — `GET /chart/nodes` reports `parentId: null` for
+    // then/else children, so looking them up that way silently finds nothing.
+    const chart: any = await this.apiClient.get(`/v2.0/flows/${flowId}/chart`);
+    const relations: any[] = chart?.relations ?? [];
+    const chartNodes: any[] = chart?.nodes ?? [];
+    const guardRelation = relations.find(
+      (r: any) => (r?.node ?? "") === guardId,
     );
-    const items: any[] = children?.items ?? children ?? [];
-    const thenNode = items.find(
-      (n: any) => n?.parentId === guardId && n?.type === "then",
+    const childIds: string[] = guardRelation?.children ?? [];
+    const thenNode = chartNodes.find(
+      (n: any) =>
+        childIds.includes(n?._id ?? n?.id) && (n?.type ?? "") === "then",
     );
 
     if (!thenNode) {
