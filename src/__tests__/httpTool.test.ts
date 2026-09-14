@@ -29,6 +29,10 @@ const MOCK_IDS = {
   preNode: "aaaaaaaaaaaaaaaaaaaaa003",
   httpNode: "aaaaaaaaaaaaaaaaaaaaa004",
   postNode: "aaaaaaaaaaaaaaaaaaaaa005",
+  preGuard: "aaaaaaaaaaaaaaaaaaaaa006",
+  responseGuard: "aaaaaaaaaaaaaaaaaaaaa007",
+  handler: "aaaaaaaaaaaaaaaaaaaaa008",
+  thenNode: "aaaaaaaaaaaaaaaaaaaaa009",
 };
 
 describe("create_tool – HTTP tool path", () => {
@@ -65,12 +69,49 @@ describe("create_tool – HTTP tool path", () => {
     };
   }
 
-  // Mocks post calls for: toolNode, resolveNode, then any extras
-  function mockPostSequence(...ids: string[]) {
-    let chain = api.post.mockResolvedValueOnce({ _id: ids[0] });
-    for (let i = 1; i < ids.length; i++) {
-      chain = chain.mockResolvedValueOnce({ _id: ids[i] });
-    }
+  // Resolve each created node by what it IS, not by call order — the http
+  // chain gains and loses nodes (guards, handlers) as the builder evolves, and
+  // positional mocks silently mis-assign ids the moment it does.
+  function mockPostSequence(..._ids: string[]) {
+    let guardCount = 0;
+    api.post.mockImplementation(async (_path: string, body: any) => {
+      const type = body?.type;
+      const label = String(body?.label ?? "");
+      if (type === "aiAgentJobTool") return { _id: MOCK_IDS.toolNode } as any;
+      if (type === "aiAgentToolAnswer")
+        return { _id: MOCK_IDS.resolveNode } as any;
+      if (type === "httpRequest") return { _id: MOCK_IDS.httpNode } as any;
+      if (type === "if") {
+        guardCount += 1;
+        return {
+          _id: guardCount === 1 ? MOCK_IDS.preGuard : MOCK_IDS.responseGuard,
+        } as any;
+      }
+      if (type === "code" && label.endsWith("Pre-Process"))
+        return { _id: MOCK_IDS.preNode } as any;
+      if (type === "code" && label.endsWith("Post-Process"))
+        return { _id: MOCK_IDS.postNode } as any;
+      if (type === "code" && label.endsWith("Report Failure"))
+        return { _id: MOCK_IDS.handler } as any;
+      return { _id: "aaaaaaaaaaaaaaaaaaaaa0ff" } as any;
+    });
+  }
+
+  // The guard locates its then-branch through the chart relations.
+  function mockChartForGuards() {
+    const base = api.get.getMockImplementation();
+    api.get.mockImplementation(async (path: string, opts?: any) => {
+      if (typeof path === "string" && path.endsWith("/chart")) {
+        return {
+          relations: [
+            { node: MOCK_IDS.preGuard, children: [MOCK_IDS.thenNode] },
+            { node: MOCK_IDS.responseGuard, children: [MOCK_IDS.thenNode] },
+          ],
+          nodes: [{ _id: MOCK_IDS.thenNode, type: "then", label: "Then" }],
+        } as any;
+      }
+      return base ? base(path, opts) : ({ items: [] } as any);
+    });
   }
 
   it("creates HTTP tool with basic GET request (url only)", async () => {
@@ -302,9 +343,79 @@ describe("create_tool – HTTP tool path", () => {
       }),
     );
 
-    const httpCallBody = api.post.mock.calls[3][1];
-    expect(httpCallBody.type).toBe("httpRequest");
-    expect(httpCallBody.target).toBe(MOCK_IDS.preNode);
+    // The HTTP node targets the pre-process GUARD, not the pre-process node.
+    // Appending both to the same target would leave their order ambiguous.
+    const httpCallBody = api.post.mock.calls.find(
+      ([, b]: any) => b?.type === "httpRequest",
+    )![1] as any;
+    expect(httpCallBody.target).toBe(MOCK_IDS.preGuard);
+  });
+
+  it("guards both code legs so a failed http tool cannot go silent", async () => {
+    // Without these the tool answers with nothing: post-process never sets
+    // input.result, Resolve hands the LLM an empty value and it emits no text.
+    mockFlowWithJobNode();
+    mockPostSequence();
+    mockChartForGuards();
+
+    const result: any = await h.handleToolCall(
+      "create_tool",
+      baseArgs({
+        preProcessCode: "input.x = 1;",
+        postProcessCode: "input.y = 2;",
+      }),
+    );
+
+    expect(result.childNodes.preProcessGuardNodeId).toBe(MOCK_IDS.preGuard);
+    expect(result.childNodes.responseGuardNodeId).toBe(MOCK_IDS.responseGuard);
+
+    const guards = api.post.mock.calls.filter(([, b]: any) => b?.type === "if");
+    expect(guards).toHaveLength(2);
+
+    // The response guard also catches a non-2xx, which the HTTP Request node
+    // reports as a status code rather than by throwing.
+    const responseGuard = guards[1][1] as any;
+    expect(responseGuard.config.condition.condition).toContain(
+      "input.hasError",
+    );
+    expect(responseGuard.config.condition.condition).toContain("statusCode");
+
+    const handlers = api.post.mock.calls.filter(([, b]: any) =>
+      String(b?.label).endsWith("Report Failure"),
+    );
+    expect(handlers).toHaveLength(2);
+    // The handler writes a readable failure the LLM can actually verbalise.
+    expect(handlers[0][1].config.code).toContain("input.result = failure");
+    expect(handlers[0][1].config.code).toContain("userMessage");
+  });
+
+  it("guards the response even when there is no post-process node", async () => {
+    mockFlowWithJobNode();
+    mockPostSequence();
+    mockChartForGuards();
+
+    await h.handleToolCall("create_tool", baseArgs({}));
+
+    const guards = api.post.mock.calls.filter(([, b]: any) => b?.type === "if");
+    expect(guards).toHaveLength(1);
+    // Anchored to the HTTP node, since there is no post-process to follow.
+    expect((guards[0][1] as any).target).toBe(MOCK_IDS.httpNode);
+  });
+
+  it("skips the generated guards when errorGuard is false", async () => {
+    mockFlowWithJobNode();
+    mockPostSequence();
+    mockChartForGuards();
+
+    const result: any = await h.handleToolCall(
+      "create_tool",
+      baseArgs({ postProcessCode: "input.y = 2;", errorGuard: false }),
+    );
+
+    expect(api.post.mock.calls.some(([, b]: any) => b?.type === "if")).toBe(
+      false,
+    );
+    expect(result.childNodes.responseGuardNodeId).toBeUndefined();
   });
 
   it("resolve node has the correct answer config", async () => {
@@ -346,19 +457,26 @@ describe("create_tool – HTTP tool path", () => {
       },
     });
 
-    const toolCallBody = api.post.mock.calls[0][1];
+    const bodyOf = (pred: (b: any) => boolean) =>
+      api.post.mock.calls.find(([, b]: any) => pred(b))![1] as any;
+
+    const toolCallBody = bodyOf((b) => b?.type === "aiAgentJobTool");
     expect(toolCallBody.label).toBe("fetch_user_posts");
 
-    const resolveCallBody = api.post.mock.calls[1][1];
+    const resolveCallBody = bodyOf((b) => b?.type === "aiAgentToolAnswer");
     expect(resolveCallBody.label).toBe("fetch_user_posts - Resolve");
 
-    const preCallBody = api.post.mock.calls[2][1];
+    const preCallBody = bodyOf(
+      (b) => b?.type === "code" && String(b?.label).endsWith("Pre-Process"),
+    );
     expect(preCallBody.label).toBe("fetch_user_posts - Pre-Process");
 
-    const httpCallBody = api.post.mock.calls[3][1];
+    const httpCallBody = bodyOf((b) => b?.type === "httpRequest");
     expect(httpCallBody.label).toBe("fetch_user_posts - HTTP Request");
 
-    const postCallBody = api.post.mock.calls[4][1];
+    const postCallBody = bodyOf(
+      (b) => b?.type === "code" && String(b?.label).endsWith("Post-Process"),
+    );
     expect(postCallBody.label).toBe("fetch_user_posts - Post-Process");
   });
 

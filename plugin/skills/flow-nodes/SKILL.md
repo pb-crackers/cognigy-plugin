@@ -316,6 +316,17 @@ flows permanently and never comes back.
 | `errorGuard`         | `true`  | Set `false` to wrap the code but skip the guard node.|
 | `errorHandlerFlowId` | —       | Opt in to a shared side-trip flow in the then-branch. |
 
+**http tools get this too, with one difference.** `create_tool { toolType: "http" }`
+builds a chain — pre-process → HTTP Request → post-process → Resolve — whose
+code nodes are wrapped and guarded like any other. Their guards are NOT empty:
+each writes a readable failure into the tool result, because an http tool that
+fails silently answers with nothing at all (post-process never sets
+`input.result`, Resolve hands the LLM an empty value, and the LLM emits no
+text — an empty turn, by a different route than an uncaught throw). The guard
+after the HTTP call also fires on a non-2xx status, which the HTTP Request node
+reports as a status code rather than by throwing. Pass `errorGuard: false` in
+the tool config to skip them.
+
 ---
 
 ### executeFlow — Execute Flow (call and return)

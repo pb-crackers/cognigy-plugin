@@ -28,6 +28,8 @@ import { normalizeToolParameters } from "./toolParameters.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
 import {
   ERROR_GUARD_CONDITION,
+  HTTP_ERROR_GUARD_CONDITION,
+  buildHttpFailureHandlerCode,
   ERROR_GUARD_LABEL_PREFIX,
   PENDING_NODE_ID,
   embeddedNodeId,
@@ -888,8 +890,13 @@ export class ToolHandlers {
     codeNodeId: string;
     codeNodeLabel: string;
     errorHandlerFlowId?: string;
+    /** Overrides the default `{{input.hasError}}` check. */
+    condition?: string;
+    /** Code for a handler node placed in the then-branch. */
+    handlerCode?: string;
   }): Promise<any> {
     const { flowId, codeNodeId, codeNodeLabel, errorHandlerFlowId } = args;
+    const condition = args.condition ?? ERROR_GUARD_CONDITION;
 
     const guardNode: any = await this.apiClient.post(
       `/v2.0/flows/${flowId}/chart/nodes`,
@@ -899,14 +906,12 @@ export class ToolHandlers {
         mode: "append",
         target: codeNodeId,
         label: `${ERROR_GUARD_LABEL_PREFIX} ${codeNodeLabel}`,
-        config: transformConfigForApi("if", {
-          condition: ERROR_GUARD_CONDITION,
-        }),
+        config: transformConfigForApi("if", { condition }),
       },
     );
     const guardId = guardNode._id || guardNode.id;
 
-    if (!errorHandlerFlowId) {
+    if (!errorHandlerFlowId && !args.handlerCode) {
       return { guardNodeId: guardId, handlerNodeId: null, handlerKind: "none" };
     }
 
@@ -935,13 +940,34 @@ export class ToolHandlers {
       };
     }
 
+    const thenId = thenNode._id || thenNode.id;
+
+    if (args.handlerCode) {
+      const handler: any = await this.apiClient.post(
+        `/v2.0/flows/${flowId}/chart/nodes`,
+        {
+          type: "code",
+          extension: "@cognigy/basic-nodes",
+          mode: "append",
+          target: thenId,
+          label: `${codeNodeLabel} - Report Failure`,
+          config: { code: args.handlerCode },
+        },
+      );
+      return {
+        guardNodeId: guardId,
+        handlerNodeId: handler._id || handler.id,
+        handlerKind: "reportFailure",
+      };
+    }
+
     const exec: any = await this.apiClient.post(
       `/v2.0/flows/${flowId}/chart/nodes`,
       {
         type: "executeFlow",
         extension: "@cognigy/basic-nodes",
         mode: "append",
-        target: thenNode._id || thenNode.id,
+        target: thenId,
         label: "Run Error Handler",
         config: transformConfigForApi("executeFlow", {
           flowId: errorHandlerFlowId,
@@ -3812,6 +3838,10 @@ export class ToolHandlers {
 
       // 3. Create optional pre-process Code node
       let preProcessNodeId: string | undefined;
+      // Each code node in the chain gets a guard, and the NEXT node targets
+      // the guard rather than the code node — appending both to the same
+      // target would leave their execution order ambiguous.
+      let preGuard: any;
       if (cfg.preProcessCode) {
         preProcessNodeId = await this.createWrappedCodeNode({
           flowId,
@@ -3820,6 +3850,22 @@ export class ToolHandlers {
           code: cfg.preProcessCode,
         });
         if (preProcessNodeId) createdNodeIds.push(preProcessNodeId);
+
+        if (preProcessNodeId && cfg.errorGuard !== false) {
+          try {
+            preGuard = await this.createErrorGuard({
+              flowId,
+              codeNodeId: preProcessNodeId,
+              codeNodeLabel: `${toolLabel} - Pre-Process`,
+              condition: ERROR_GUARD_CONDITION,
+              handlerCode: buildHttpFailureHandlerCode(),
+            });
+            if (preGuard?.guardNodeId)
+              createdNodeIds.push(preGuard.guardNodeId);
+          } catch {
+            // A missing guard must not fail the tool build.
+          }
+        }
       }
 
       // 4. Create the HTTP Request node
@@ -3835,7 +3881,7 @@ export class ToolHandlers {
           type: "httpRequest",
           extension: "@cognigy/basic-nodes",
           mode: "append",
-          target: preProcessNodeId ?? toolNodeId,
+          target: preGuard?.guardNodeId ?? preProcessNodeId ?? toolNodeId,
           label: `${toolLabel} - HTTP Request`,
           config: httpConfig,
         },
@@ -3845,6 +3891,7 @@ export class ToolHandlers {
 
       // 5. Create optional post-process Code node
       let postProcessNodeId: string | undefined;
+      let postGuard: any;
       if (cfg.postProcessCode) {
         postProcessNodeId = await this.createWrappedCodeNode({
           flowId,
@@ -3855,14 +3902,39 @@ export class ToolHandlers {
         if (postProcessNodeId) createdNodeIds.push(postProcessNodeId);
       }
 
+      // Guard the leg that reaches the Resolve node. Placed after
+      // post-processing when there is any, otherwise straight after the HTTP
+      // call, so a non-2xx response is still caught when no post-process runs.
+      if (cfg.errorGuard !== false) {
+        try {
+          postGuard = await this.createErrorGuard({
+            flowId,
+            codeNodeId: postProcessNodeId ?? httpNodeId,
+            codeNodeLabel: `${toolLabel} - Response`,
+            condition: HTTP_ERROR_GUARD_CONDITION,
+            handlerCode: buildHttpFailureHandlerCode(),
+          });
+          if (postGuard?.guardNodeId)
+            createdNodeIds.push(postGuard.guardNodeId);
+        } catch {
+          // A missing guard must not fail the tool build.
+        }
+      }
+
       const createdHttp = {
         toolId: toolNodeId,
         name: data.name,
         toolType: "http",
         childNodes: {
           ...(preProcessNodeId ? { preProcessNodeId } : {}),
+          ...(preGuard?.guardNodeId
+            ? { preProcessGuardNodeId: preGuard.guardNodeId }
+            : {}),
           httpNodeId,
           ...(postProcessNodeId ? { postProcessNodeId } : {}),
+          ...(postGuard?.guardNodeId
+            ? { responseGuardNodeId: postGuard.guardNodeId }
+            : {}),
           resolveNodeId,
         },
       };

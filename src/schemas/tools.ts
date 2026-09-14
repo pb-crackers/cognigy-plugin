@@ -281,6 +281,8 @@ export const createToolSchema = z.object({
     preProcessCode: z.string().optional(),
     postProcessCode: z.string().optional(),
     toolResponseValue: z.string().optional(),
+    // http tools: set false to skip the generated failure guards
+    errorGuard: z.boolean().optional(),
   }),
 });
 
@@ -310,6 +312,7 @@ export const updateToolSchema = z.object({
       preProcessCode: z.string().optional(),
       postProcessCode: z.string().optional(),
       toolResponseValue: z.string().optional(),
+      errorGuard: z.boolean().optional(),
       httpNodeId: idSchema.optional(),
       preProcessNodeId: idSchema.optional(),
       postProcessNodeId: idSchema.optional(),

@@ -147,3 +147,42 @@ export const ERROR_GUARD_CONDITION = "{{input.hasError}}";
 
 /** Label prefix for generated guard nodes, used to identify them in a flow. */
 export const ERROR_GUARD_LABEL_PREFIX = "Error Guard:";
+
+/**
+ * Guard condition for nodes that follow an HTTP Request.
+ *
+ * Covers both failure modes: a code node that threw (`input.hasError`) and an
+ * HTTP call that came back non-2xx, which the HTTP Request node reports as a
+ * status code rather than by throwing.
+ */
+export const HTTP_ERROR_GUARD_CONDITION =
+  "{{input.hasError || (input.httprequest && input.httprequest.statusCode >= 400)}}";
+
+/**
+ * Handler placed in an http tool's guard branch.
+ *
+ * Without it the tool goes silent on failure: the post-process node never sets
+ * `input.result`, the Resolve Tool Action hands the LLM nothing, and the LLM
+ * emits no text — the same empty turn an uncaught throw used to produce, by a
+ * different route. Writing a readable error into the tool result instead lets
+ * the agent say it could not complete the lookup.
+ *
+ * Both `input.result` and `input.httprequest` are set because either may be
+ * what the tool's Resolve node returns: `toolResponseValue` defaults to
+ * `input.httprequest` for http tools, but callers commonly point it at
+ * `input.result` after post-processing.
+ */
+export function buildHttpFailureHandlerCode(): string {
+  return `// Auto-generated: surface the failure to the LLM so the tool cannot go silent.
+const trace = input.errorTrace || {};
+const status = (input.httprequest || {}).statusCode || null;
+const failure = {
+  error: true,
+  userMessage: "This lookup could not be completed right now. Tell the user the information is temporarily unavailable, do not invent a value, and offer an alternative if you have one.",
+  detail: trace.errorMessage || (status ? "HTTP " + status : "Unknown failure"),
+  statusCode: status,
+  traceId: trace.traceId || null
+};
+input.result = failure;
+input.httprequest = { result: failure, statusCode: status || 500, length: 0 };`;
+}
