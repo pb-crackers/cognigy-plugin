@@ -21,16 +21,14 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
 
-// Alias form (cognigy-engine@npm:...) is REQUIRED, not cosmetic: a plain
-// `@cognigy/plugin-engine@<v>` spec makes `npm exec` treat this repo's own
-// package.json as satisfying the pin when a session is rooted here, skip
-// the install, and fail with `cognigy-mcp: command not found` (-32000).
-const expectedArgs = [
-  "-y",
-  "-p",
-  `cognigy-engine@npm:@cognigy/plugin-engine@${pkg.version}`,
-  "cognigy-mcp",
-];
+// This fork is NOT published to npm — it is installed straight from GitHub,
+// so the engine that runs is this repo's source (built by the `prepare` hook)
+// rather than Cognigy's published package. Upstream pins an npm alias here
+// (cognigy-engine@npm:@cognigy/plugin-engine@<v>); that form must not come
+// back on a merge, or the plugin would silently run the stock engine and the
+// fork's changes would vanish with no error.
+const ENGINE_SPEC = "github:pb-crackers/cognigy-plugin";
+const expectedArgs = ["-y", "-p", ENGINE_SPEC, "cognigy-mcp"];
 
 function checkPlatformServer(platform, errors) {
   if (!platform) {

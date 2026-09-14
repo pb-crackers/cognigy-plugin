@@ -890,6 +890,21 @@ After creating, use talk_to_agent to test.`,
           type: "object",
           description: "Node-type-specific configuration.",
         },
+        errorTrace: {
+          type: "boolean",
+          description:
+            "code nodes only (create/update). Default true: the code is wrapped in a try/catch that records a standard error trace (traceId, timestamp, flowId, flowName, nodeId, nodeLabel, errorName, errorMessage, stack, sessionId, userId, toolId, toolArgs) to context.errors / context.lastError / input.errorTrace and the project logs, then sets input.hasError. Write plain code and let this happen — do NOT add your own try/catch for it. Set false only to write the code completely unwrapped.",
+        },
+        errorGuard: {
+          type: "boolean",
+          description:
+            "code nodes only (create). Default true: an `if {{input.hasError}}` guard is appended after the node. Its then-branch is left empty — it is a branch point for the active flow to handle the failure, not a logger (the catch block already logs). Set false to wrap the code but skip the guard.",
+        },
+        errorHandlerFlowId: {
+          type: "string",
+          description:
+            "code nodes only (create), optional. Reference ID of a shared flow to run from the guard's then-branch as a side trip (a ticket, a webhook, a notification). Uses Execute Flow, which RETURNS, so the active flow still owns the user-facing experience. Omit unless the project has such a flow.",
+        },
         focus: {
           oneOf: [
             { type: "string" },

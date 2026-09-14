@@ -1,9 +1,11 @@
-// Keeps every tracked plugin manifest in lockstep with the
-// @cognigy/plugin-engine release version, so the plugin and its engine always
-// carry the same number — the single version users reason about. For each
-// file it rewrites the top-level `version` field (when present) AND every
-// engine pin (`@cognigy/plugin-engine@<version>`), so the plugin always
-// launches the exact engine build it was released with. Invoked by
+// Keeps every tracked plugin manifest in lockstep with the release version.
+// For each file it rewrites the top-level `version` field (when present).
+//
+// This fork installs the engine from GitHub rather than npm, so there is no
+// versioned engine pin left to rewrite — the spec carries a git ref, not a
+// version. The check below asserts the npm pin has not returned via an
+// upstream merge, which would silently swap the fork's engine for the stock
+// one. Invoked by
 // semantic-release (.releaserc exec prepareCmd) with the computed next
 // version; the bumped manifests are committed via the git assets.
 //
@@ -32,9 +34,7 @@ const FILES = [
 
 for (const file of FILES) {
   const src = readFileSync(file, "utf8");
-  const next = src
-    .replace(/("version":\s*")[^"]*(")/, `$1${version}$2`)
-    .replace(/(@cognigy\/plugin-engine@)[^"]*(")/g, `$1${version}$2`);
+  const next = src.replace(/("version":\s*")[^"]*(")/, `$1${version}$2`);
   writeFileSync(file, next);
 
   const parsed = JSON.parse(next);
@@ -45,15 +45,11 @@ for (const file of FILES) {
     process.exit(1);
   }
 
-  // The pin uses an npm alias (cognigy-engine@npm:@cognigy/plugin-engine@<v>)
-  // so `npm exec` never resolves the spec to this repo's own package when the
-  // client session is rooted here (name match would skip the install and the
-  // bin would be missing — MCP error -32000).
-  const pins = next.match(/@cognigy\/plugin-engine@[^"]*/g) ?? [];
-  const badPin = pins.find((p) => p !== `@cognigy/plugin-engine@${version}`);
-  if (badPin) {
+  // An npm engine pin here means an upstream merge reintroduced Cognigy's
+  // published engine, which would run instead of this fork's source.
+  if (next.includes("@cognigy/plugin-engine@")) {
     console.error(
-      `[release] FAILED to pin the engine in ${file} to ${version} (got ${badPin}); the mcpServers npx args may have moved.`,
+      `[release] ${file} still pins the npm engine (@cognigy/plugin-engine@...). This fork installs from GitHub; re-apply the github: spec after the merge.`,
     );
     process.exit(1);
   }

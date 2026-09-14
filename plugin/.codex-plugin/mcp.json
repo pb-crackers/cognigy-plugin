@@ -2,12 +2,7 @@
   "mcpServers": {
     "platform": {
       "command": "npx",
-      "args": [
-        "-y",
-        "-p",
-        "cognigy-engine@npm:@cognigy/plugin-engine@1.15.1",
-        "cognigy-mcp"
-      ]
+      "args": ["-y", "-p", "github:pb-crackers/cognigy-plugin", "cognigy-mcp"]
     },
     "docs": {
       "type": "http",
