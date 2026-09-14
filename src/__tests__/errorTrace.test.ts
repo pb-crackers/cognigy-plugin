@@ -2,7 +2,6 @@ import { describe, it, expect } from "@jest/globals";
 import {
   ERROR_TRACE_MARKER,
   PENDING_NODE_ID,
-  buildFallbackHandlerCode,
   embeddedNodeId,
   isWrapped,
   unwrapCode,
@@ -162,15 +161,5 @@ describe("embeddedNodeId", () => {
 
   it("returns null for code that was never wrapped", () => {
     expect(embeddedNodeId("input.x = 1;")).toBeNull();
-  });
-});
-
-describe("buildFallbackHandlerCode", () => {
-  it("logs the captured trace without assuming an Error Handler flow exists", () => {
-    const code = buildFallbackHandlerCode();
-
-    expect(code).toContain("input.errorTrace");
-    expect(code).toContain("api.log");
-    expect(code).not.toContain("executeFlow");
   });
 });

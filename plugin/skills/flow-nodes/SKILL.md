@@ -294,23 +294,27 @@ An **Error Guard** is appended automatically after each code node:
 ```
 code node (wrapped)
   └─ if {{input.hasError}}
-       ├─ then → Run Error Handler   (Execute Flow → the project's "Error Handler" flow)
+       ├─ then → (empty — put the user-facing handling here)
        └─ else → (continue)
 ```
 
-The handler is resolved in this order: an explicit `errorHandlerFlowId`, then a
-flow named **`Error Handler`** in the same project, and failing both a
-self-contained logging node so the guard is never left pointing at nothing.
-Execute Flow is used rather than `goTo` deliberately — it **returns**, so the
-error flow only logs/notifies and the active flow keeps ownership of what the
-user sees. Handle the user-facing consequence in the active flow, after the
-guard.
+The guard is a **branch point, not a handler**. The error is already logged by
+the code node's own catch block, so nothing logs it again here — a shared
+handler flow would just emit the same payload twice. What the caller should
+experience belongs to the flow that failed, so fill the then-branch in that
+flow: a `say`, a fallback value, a skip, a handover.
+
+If a project does want a shared side trip (a ticket, a webhook, a
+notification), pass `errorHandlerFlowId` and an Execute Flow node is added to
+the then-branch. Execute Flow **returns**, so the active flow still owns the
+user-facing experience afterwards. Do not use `goTo` for this — it switches
+flows permanently and never comes back.
 
 | Parameter            | Default | Effect                                              |
 | -------------------- | ------- | --------------------------------------------------- |
 | `errorTrace`         | `true`  | Set `false` to write the code completely unwrapped.  |
 | `errorGuard`         | `true`  | Set `false` to wrap the code but skip the guard node.|
-| `errorHandlerFlowId` | —       | Target flow for the guard's Execute Flow node.       |
+| `errorHandlerFlowId` | —       | Opt in to a shared side-trip flow in the then-branch. |
 
 ---
 

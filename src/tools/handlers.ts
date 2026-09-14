@@ -27,13 +27,10 @@ import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { normalizeToolParameters } from "./toolParameters.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
 import {
-  DEFAULT_ERROR_HANDLER_FLOW_NAME,
   ERROR_GUARD_CONDITION,
   ERROR_GUARD_LABEL_PREFIX,
   PENDING_NODE_ID,
-  buildFallbackHandlerCode,
   embeddedNodeId,
-  isWrapped,
   unwrapCode,
   wrapCodeWithErrorTrace,
 } from "../utils/errorTrace.js";
@@ -874,81 +871,17 @@ export class ToolHandlers {
     return result;
   }
 
-  /** Per-flow cache of the resolved error handler, including misses. */
-  private errorHandlerFlowCache = new Map<
-    string,
-    { id: string; referenceId?: string } | null
-  >();
-
-  /**
-   * Find the project's conventional "Error Handler" flow, if it has one.
-   *
-   * Neither `GET /v2.0/flows/{id}` nor the flow list projection returns
-   * `projectId`, so a flow cannot be mapped to its project directly. Instead
-   * the projects are scanned and each one's flow list checked for this flowId
-   * — a handful of calls, cached per flow (misses included) so a burst of node
-   * creations pays for it once.
-   *
-   * Returns null rather than throwing: no handler flow downgrades the guard to
-   * inline logging, it does not fail the node creation.
-   */
-  private async findErrorHandlerFlow(
-    flowId: string,
-    handlerFlowName: string = DEFAULT_ERROR_HANDLER_FLOW_NAME,
-  ): Promise<{ id: string; referenceId?: string } | null> {
-    const cacheKey = `${flowId}::${handlerFlowName}`;
-    const cached = this.errorHandlerFlowCache.get(cacheKey);
-    if (cached !== undefined) return cached;
-
-    let resolved: { id: string; referenceId?: string } | null = null;
-    try {
-      const projects: any = await this.apiClient.get(`/v2.0/projects`, {
-        params: { limit: 100 },
-      });
-      const projectItems: any[] = projects?.items ?? projects ?? [];
-
-      for (const project of projectItems) {
-        const projectId = project?._id ?? project?.id;
-        if (!projectId) continue;
-
-        const flows: any = await this.apiClient.get(`/v2.0/flows`, {
-          params: { projectId, limit: 100 },
-        });
-        const flowItems: any[] = flows?.items ?? flows ?? [];
-        const containsThisFlow = flowItems.some(
-          (f: any) => (f?._id ?? f?.id) === flowId,
-        );
-        if (!containsThisFlow) continue;
-
-        const match = flowItems.find(
-          (f: any) =>
-            typeof f?.name === "string" &&
-            f.name.trim().toLowerCase() ===
-              handlerFlowName.trim().toLowerCase(),
-        );
-        if (match) {
-          resolved = {
-            id: match._id || match.id,
-            referenceId: match.referenceId,
-          };
-        }
-        break;
-      }
-    } catch {
-      resolved = null;
-    }
-
-    this.errorHandlerFlowCache.set(cacheKey, resolved);
-    return resolved;
-  }
-
   /**
    * Append the `if {{input.hasError}}` guard after a code node.
    *
-   * The then-branch runs the project's Error Handler flow as a function call
-   * (Execute Flow returns, so the active flow keeps ownership of the
-   * user-facing experience) or, when no such flow exists, logs the trace
-   * inline so the guard is never left dangling.
+   * The guard is a branch point, not a handler: the error is already logged by
+   * the code node's own catch block, so logging again here would emit the same
+   * payload twice. The then-branch is left empty for the active flow to fill
+   * with whatever the user should experience — that decision belongs to the
+   * flow that failed, not to a shared routine.
+   *
+   * Pass `errorHandlerFlowId` to also run a shared flow as a side trip. Execute
+   * Flow returns, so the active flow keeps control afterwards.
    */
   private async createErrorGuard(args: {
     flowId: string;
@@ -956,7 +889,7 @@ export class ToolHandlers {
     codeNodeLabel: string;
     errorHandlerFlowId?: string;
   }): Promise<any> {
-    const { flowId, codeNodeId, codeNodeLabel } = args;
+    const { flowId, codeNodeId, codeNodeLabel, errorHandlerFlowId } = args;
 
     const guardNode: any = await this.apiClient.post(
       `/v2.0/flows/${flowId}/chart/nodes`,
@@ -973,9 +906,10 @@ export class ToolHandlers {
     );
     const guardId = guardNode._id || guardNode.id;
 
-    // The `if` node is created with then/else children already in place; the
-    // handler goes inside the then branch.
-    //
+    if (!errorHandlerFlowId) {
+      return { guardNodeId: guardId, handlerNodeId: null, handlerKind: "none" };
+    }
+
     // The parent/child link is only in the chart's `relations`, NOT on the
     // nodes themselves — `GET /chart/nodes` reports `parentId: null` for
     // then/else children, so looking them up that way silently finds nothing.
@@ -1000,51 +934,25 @@ export class ToolHandlers {
           "Guard created, but its then-branch could not be located; add the handler node manually.",
       };
     }
-    const thenId = thenNode._id || thenNode.id;
 
-    let handlerFlowId = args.errorHandlerFlowId;
-    if (!handlerFlowId) {
-      const found = await this.findErrorHandlerFlow(flowId);
-      handlerFlowId = found?.referenceId ?? found?.id;
-    }
-
-    if (handlerFlowId) {
-      const exec: any = await this.apiClient.post(
-        `/v2.0/flows/${flowId}/chart/nodes`,
-        {
-          type: "executeFlow",
-          extension: "@cognigy/basic-nodes",
-          mode: "append",
-          target: thenId,
-          label: "Run Error Handler",
-          config: transformConfigForApi("executeFlow", {
-            flowId: handlerFlowId,
-          }),
-        },
-      );
-      return {
-        guardNodeId: guardId,
-        handlerNodeId: exec._id || exec.id,
-        handlerKind: "executeFlow",
-        errorHandlerFlowId: handlerFlowId,
-      };
-    }
-
-    const fallback: any = await this.apiClient.post(
+    const exec: any = await this.apiClient.post(
       `/v2.0/flows/${flowId}/chart/nodes`,
       {
-        type: "code",
+        type: "executeFlow",
         extension: "@cognigy/basic-nodes",
         mode: "append",
-        target: thenId,
-        label: "Log Error (fallback)",
-        config: { code: buildFallbackHandlerCode() },
+        target: thenNode._id || thenNode.id,
+        label: "Run Error Handler",
+        config: transformConfigForApi("executeFlow", {
+          flowId: errorHandlerFlowId,
+        }),
       },
     );
     return {
       guardNodeId: guardId,
-      handlerNodeId: fallback._id || fallback.id,
-      handlerKind: "inlineLog",
+      handlerNodeId: exec._id || exec.id,
+      handlerKind: "executeFlow",
+      errorHandlerFlowId,
     };
   }
 

@@ -25,6 +25,10 @@
  * written to `context.errors` (array), `context.lastError` (latest),
  * `input.errorTrace`, and the project logs via `api.log("error", ...)`.
  *
+ * The catch block is the ONLY place an error is logged. An earlier design also
+ * logged from a shared Error Handler flow reached via Execute Flow, which
+ * emitted the same payload twice for no added signal.
+ *
  * `flowId`, `nodeId` and `nodeLabel` have no runtime accessor inside a Code
  * Node, so they are baked in as literals at authoring time. A node's id only
  * exists after it has been created, which is why creation is a two-pass
@@ -143,21 +147,3 @@ export const ERROR_GUARD_CONDITION = "{{input.hasError}}";
 
 /** Label prefix for generated guard nodes, used to identify them in a flow. */
 export const ERROR_GUARD_LABEL_PREFIX = "Error Guard:";
-
-/** Conventional name of the per-project error handling flow. */
-export const DEFAULT_ERROR_HANDLER_FLOW_NAME = "Error Handler";
-
-/**
- * Fallback logging code for the guard's then-branch when no Error Handler flow
- * is available. Self-contained so the guard is never left pointing at nothing.
- *
- * Not itself wrapped or guarded — it only reads already-captured state and
- * cannot meaningfully throw.
- */
-export function buildFallbackHandlerCode(): string {
-  return `// Fallback error handling — no Error Handler flow was wired up.
-// Replace this node with an Execute Flow node once the project has one.
-const trace = input.errorTrace || {};
-try { api.log("error", "[unhandled-code-node-error] " + JSON.stringify(trace)); } catch (ignored) {}
-try { api.logDebugError(JSON.stringify(trace, null, 2), "Code Node Error"); } catch (ignored) {}`;
-}

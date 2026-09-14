@@ -116,11 +116,30 @@ describe("code node error guard", () => {
     expect(guardBody.config.condition.condition).toBe("{{input.hasError}}");
   });
 
+  it("leaves the then branch empty by default so the error is logged once", async () => {
+    // The code node's own catch block already logs the full trace; a handler
+    // flow here would emit the same payload a second time.
+    const result: any = await createCodeNode();
+
+    expect(result.errorGuard.handlerKind).toBe("none");
+    expect(result.errorGuard.handlerNodeId).toBeNull();
+    expect(
+      api.post.mock.calls.some(([, b]: any) => b?.type === "executeFlow"),
+    ).toBe(false);
+    // No handler means no reason to go looking for one.
+    expect(api.get).not.toHaveBeenCalledWith(
+      "/v2.0/projects",
+      expect.anything(),
+    );
+  });
+
   it("finds the then branch through chart relations, not node parentId", async () => {
     // Regression: the live API reports parentId: null for then/else children,
-    // so a parentId-based lookup silently found nothing and left the guard
-    // without a handler.
-    const result: any = await createCodeNode();
+    // so a parentId-based lookup silently found nothing and left the opt-in
+    // handler unattached.
+    const result: any = await createCodeNode({
+      errorHandlerFlowId: HANDLER_FLOW_REF,
+    });
 
     expect(result.errorGuard.handlerKind).toBe("executeFlow");
     expect(result.errorGuard.handlerNodeId).toBe(ID.handlerNode);
@@ -134,7 +153,7 @@ describe("code node error guard", () => {
 
   it("never sends isGoto — the API rejects it on an executeFlow node", async () => {
     // Regression: "Validation failed. Field 'isGoto' is not allowed."
-    await createCodeNode();
+    await createCodeNode({ errorHandlerFlowId: HANDLER_FLOW_REF });
 
     const [, body]: any = api.post.mock.calls.find(
       ([, b]: any) => b?.type === "executeFlow",
@@ -146,38 +165,13 @@ describe("code node error guard", () => {
     expect(JSON.stringify(body)).not.toContain("isGoto");
   });
 
-  it("targets an explicit errorHandlerFlowId without scanning projects", async () => {
+  it("runs an opt-in handler flow as a side trip via Execute Flow", async () => {
     await createCodeNode({ errorHandlerFlowId: "explicit-flow-ref" });
 
     const [, body]: any = api.post.mock.calls.find(
       ([, b]: any) => b?.type === "executeFlow",
     )!;
     expect(body.config.flowNode.flow).toBe("explicit-flow-ref");
-    expect(api.get).not.toHaveBeenCalledWith(
-      "/v2.0/projects",
-      expect.anything(),
-    );
-  });
-
-  it("falls back to an inline logging node when no Error Handler flow exists", async () => {
-    api.get.mockImplementation(async (path: string) => {
-      if (path === `/v2.0/flows/${ID.flow}/chart`)
-        return chartWithGuardChildren() as any;
-      if (path === "/v2.0/projects")
-        return { items: [{ _id: ID.project }] } as any;
-      if (path === "/v2.0/flows")
-        return { items: [{ _id: ID.flow, name: "Agent Flow" }] } as any;
-      if (path.includes("/chart/nodes/")) return { config: {} } as any;
-      return { items: [] } as any;
-    });
-
-    const result: any = await createCodeNode();
-
-    expect(result.errorGuard.handlerKind).toBe("inlineLog");
-    const [, body]: any = api.post.mock.calls.find(
-      ([, b]: any) => b?.label === "Log Error (fallback)",
-    )!;
-    expect(body.type).toBe("code");
     expect(body.target).toBe(ID.thenNode);
   });
 
