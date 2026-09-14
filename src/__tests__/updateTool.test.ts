@@ -257,7 +257,11 @@ describe("update_tool", () => {
     expect(result.updatedFields).toContain("preProcessCode");
     expect(api.patch).toHaveBeenCalledWith(
       `/v2.0/flows/${ID.flow}/chart/nodes/code-pre-001`,
-      { config: { code: "input.newField = true;" } },
+      {
+        config: {
+          code: expect.stringContaining("input.newField = true;"),
+        },
+      },
     );
   });
 
@@ -290,7 +294,11 @@ describe("update_tool", () => {
     expect(result.updatedFields).toContain("postProcessCode");
     expect(api.patch).toHaveBeenCalledWith(
       `/v2.0/flows/${ID.flow}/chart/nodes/code-post-001`,
-      { config: { code: 'output.result = "done";' } },
+      {
+        config: {
+          code: expect.stringContaining('output.result = "done";'),
+        },
+      },
     );
   });
 

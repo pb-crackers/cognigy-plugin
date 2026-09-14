@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
+import { ERROR_TRACE_MARKER } from "../utils/errorTrace.js";
 
 // The backup gate holds the first change to an existing agent until the user
 // answers; suites that are not testing the gate answer it up front. The answer
@@ -173,7 +174,11 @@ describe("create_tool – HTTP tool path", () => {
 
     const preCallBody = api.post.mock.calls[2][1];
     expect(preCallBody.type).toBe("code");
-    expect(preCallBody.config.code).toBe("input.data = { transformed: true };");
+    expect(preCallBody.config.code).toContain(
+      "input.data = { transformed: true };",
+    );
+    // Code nodes are wrapped in the error-trace envelope before they are written.
+    expect(preCallBody.config.code).toContain(ERROR_TRACE_MARKER);
     expect(preCallBody.label).toBe("My HTTP Tool - Pre-Process");
   });
 
@@ -199,9 +204,10 @@ describe("create_tool – HTTP tool path", () => {
 
     const postCallBody = api.post.mock.calls[3][1];
     expect(postCallBody.type).toBe("code");
-    expect(postCallBody.config.code).toBe(
+    expect(postCallBody.config.code).toContain(
       "input.result = input.httprequest.data;",
     );
+    expect(postCallBody.config.code).toContain(ERROR_TRACE_MARKER);
     expect(postCallBody.label).toBe("My HTTP Tool - Post-Process");
   });
 
@@ -442,7 +448,9 @@ describe("update_tool – HTTP child-node resolution", () => {
     expect(result.updatedFields).toContain("postProcessCode");
     expect(api.patch).toHaveBeenCalledWith(
       `/v2.0/flows/${ID.flow}/chart/nodes/${MOCK_IDS.postNode}`,
-      { config: { code: "input.x = 1;" } },
+      {
+        config: { code: expect.stringContaining("input.x = 1;") },
+      },
     );
   });
 
@@ -612,7 +620,9 @@ describe("update_tool – HTTP child-node resolution", () => {
 
     expect(api.patch).toHaveBeenCalledWith(
       `/v2.0/flows/${ID.flow}/chart/nodes/${MOCK_IDS.postNode}`,
-      { config: { code: "input.y = 2;" } },
+      {
+        config: { code: expect.stringContaining("input.y = 2;") },
+      },
     );
   });
 
@@ -658,7 +668,11 @@ describe("update_tool – HTTP child-node resolution", () => {
         mode: "append",
         target: MOCK_IDS.httpNode,
         label: "search_recipes - Post-Process",
-        config: { code: "input.recipes = input.httprequest.body.meals;" },
+        config: {
+          code: expect.stringContaining(
+            "input.recipes = input.httprequest.body.meals;",
+          ),
+        },
       }),
     );
   });

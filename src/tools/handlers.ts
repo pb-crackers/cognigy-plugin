@@ -27,6 +27,17 @@ import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { normalizeToolParameters } from "./toolParameters.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
 import {
+  DEFAULT_ERROR_HANDLER_FLOW_NAME,
+  ERROR_GUARD_CONDITION,
+  ERROR_GUARD_LABEL_PREFIX,
+  PENDING_NODE_ID,
+  buildFallbackHandlerCode,
+  embeddedNodeId,
+  isWrapped,
+  unwrapCode,
+  wrapCodeWithErrorTrace,
+} from "../utils/errorTrace.js";
+import {
   evaluateChecks,
   summarize,
   nodeId as voiceNodeId,
@@ -358,6 +369,24 @@ function transformConfigForApi(
           key: config.contextEntries[0].key,
           value: config.contextEntries[0].value,
           mode: "simple",
+        };
+      }
+      return config;
+    }
+
+    case "executeFlow": {
+      // Same flowNode shape as goTo, but isGoto:false is what makes the target
+      // flow return here instead of taking the session over.
+      if (config.flowNode) return config;
+      const { flowId: targetFlowId, nodeId: targetNodeId, ...rest } = config;
+      if (targetFlowId || targetNodeId) {
+        return {
+          flowNode: {
+            flow: targetFlowId ?? "",
+            node: targetNodeId ?? "",
+            isGoto: false,
+          },
+          ...rest,
         };
       }
       return config;
@@ -843,6 +872,193 @@ export class ToolHandlers {
       result[key] = ToolHandlers.SENSITIVE_KEYS.has(key) ? "[REDACTED]" : value;
     }
     return result;
+  }
+
+  /**
+   * Find the project's conventional "Error Handler" flow, if it has one.
+   *
+   * Resolved from the flow being edited: flow → projectId → sibling flows.
+   * Returns null rather than throwing — a missing handler flow downgrades the
+   * guard to inline logging, it does not fail the node creation.
+   */
+  private async findErrorHandlerFlow(
+    flowId: string,
+    flowName: string = DEFAULT_ERROR_HANDLER_FLOW_NAME,
+  ): Promise<{ id: string; referenceId?: string } | null> {
+    try {
+      const flow: any = await this.apiClient.get(`/v2.0/flows/${flowId}`);
+      const projectId = flow?.projectId;
+      if (!projectId) return null;
+
+      const flows: any = await this.apiClient.get(`/v2.0/flows`, {
+        params: { projectId, limit: 100 },
+      });
+      const items: any[] = flows?.items ?? flows ?? [];
+      const match = items.find(
+        (f: any) =>
+          typeof f?.name === "string" &&
+          f.name.trim().toLowerCase() === flowName.trim().toLowerCase(),
+      );
+      if (!match) return null;
+      return {
+        id: match._id || match.id,
+        referenceId: match.referenceId,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Append the `if {{input.hasError}}` guard after a code node.
+   *
+   * The then-branch runs the project's Error Handler flow as a function call
+   * (Execute Flow returns, so the active flow keeps ownership of the
+   * user-facing experience) or, when no such flow exists, logs the trace
+   * inline so the guard is never left dangling.
+   */
+  private async createErrorGuard(args: {
+    flowId: string;
+    codeNodeId: string;
+    codeNodeLabel: string;
+    errorHandlerFlowId?: string;
+  }): Promise<any> {
+    const { flowId, codeNodeId, codeNodeLabel } = args;
+
+    const guardNode: any = await this.apiClient.post(
+      `/v2.0/flows/${flowId}/chart/nodes`,
+      {
+        type: "if",
+        extension: "@cognigy/basic-nodes",
+        mode: "append",
+        target: codeNodeId,
+        label: `${ERROR_GUARD_LABEL_PREFIX} ${codeNodeLabel}`,
+        config: transformConfigForApi("if", {
+          condition: ERROR_GUARD_CONDITION,
+        }),
+      },
+    );
+    const guardId = guardNode._id || guardNode.id;
+
+    // The `if` node is created with then/else children already in place; the
+    // handler goes inside the then branch.
+    const children: any = await this.apiClient.get(
+      `/v2.0/flows/${flowId}/chart/nodes`,
+      { params: { limit: 200 } },
+    );
+    const items: any[] = children?.items ?? children ?? [];
+    const thenNode = items.find(
+      (n: any) => n?.parentId === guardId && n?.type === "then",
+    );
+
+    if (!thenNode) {
+      return {
+        guardNodeId: guardId,
+        handlerNodeId: null,
+        handlerKind: "none",
+        warning:
+          "Guard created, but its then-branch could not be located; add the handler node manually.",
+      };
+    }
+    const thenId = thenNode._id || thenNode.id;
+
+    let handlerFlowId = args.errorHandlerFlowId;
+    if (!handlerFlowId) {
+      const found = await this.findErrorHandlerFlow(flowId);
+      handlerFlowId = found?.referenceId ?? found?.id;
+    }
+
+    if (handlerFlowId) {
+      const exec: any = await this.apiClient.post(
+        `/v2.0/flows/${flowId}/chart/nodes`,
+        {
+          type: "executeFlow",
+          extension: "@cognigy/basic-nodes",
+          mode: "append",
+          target: thenId,
+          label: "Run Error Handler",
+          config: transformConfigForApi("executeFlow", {
+            flowId: handlerFlowId,
+          }),
+        },
+      );
+      return {
+        guardNodeId: guardId,
+        handlerNodeId: exec._id || exec.id,
+        handlerKind: "executeFlow",
+        errorHandlerFlowId: handlerFlowId,
+      };
+    }
+
+    const fallback: any = await this.apiClient.post(
+      `/v2.0/flows/${flowId}/chart/nodes`,
+      {
+        type: "code",
+        extension: "@cognigy/basic-nodes",
+        mode: "append",
+        target: thenId,
+        label: "Log Error (fallback)",
+        config: { code: buildFallbackHandlerCode() },
+      },
+    );
+    return {
+      guardNodeId: guardId,
+      handlerNodeId: fallback._id || fallback.id,
+      handlerKind: "inlineLog",
+    };
+  }
+
+  /**
+   * Create a code node with the error-trace envelope already applied.
+   *
+   * Used by the http-tool builder, which writes its pre/post-process nodes
+   * directly rather than going through manage_flow_nodes. Two passes, for the
+   * same reason as the create path: the node id only exists after the POST.
+   */
+  private async createWrappedCodeNode(args: {
+    flowId: string;
+    target: string;
+    label: string;
+    code: string;
+  }): Promise<string> {
+    const { flowId, target, label, code } = args;
+    const node: any = await this.apiClient.post(
+      `/v2.0/flows/${flowId}/chart/nodes`,
+      {
+        type: "code",
+        extension: "@cognigy/basic-nodes",
+        mode: "append",
+        target,
+        label,
+        config: {
+          code: wrapCodeWithErrorTrace({
+            code,
+            flowId,
+            nodeId: PENDING_NODE_ID,
+            nodeLabel: label,
+          }),
+        },
+      },
+    );
+    const nodeId = node._id || node.id;
+    try {
+      await this.apiClient.patch(
+        `/v2.0/flows/${flowId}/chart/nodes/${nodeId}`,
+        {
+          config: {
+            code: wrapCodeWithErrorTrace({
+              code,
+              flowId,
+              nodeId,
+              nodeLabel: label,
+            }),
+          },
+        },
+      );
+    } catch {
+      // Wrapped either way; only the embedded id literal is stale.
+    }
+    return nodeId;
   }
 
   private async readTask(taskId: string, projectId?: string): Promise<any> {
@@ -3649,18 +3865,12 @@ export class ToolHandlers {
       // 3. Create optional pre-process Code node
       let preProcessNodeId: string | undefined;
       if (cfg.preProcessCode) {
-        const preNode: any = await this.apiClient.post(
-          `/v2.0/flows/${flowId}/chart/nodes`,
-          {
-            type: "code",
-            extension: "@cognigy/basic-nodes",
-            mode: "append",
-            target: toolNodeId,
-            label: `${toolLabel} - Pre-Process`,
-            config: { code: cfg.preProcessCode },
-          },
-        );
-        preProcessNodeId = preNode._id || preNode.id;
+        preProcessNodeId = await this.createWrappedCodeNode({
+          flowId,
+          target: toolNodeId,
+          label: `${toolLabel} - Pre-Process`,
+          code: cfg.preProcessCode,
+        });
         if (preProcessNodeId) createdNodeIds.push(preProcessNodeId);
       }
 
@@ -3688,18 +3898,12 @@ export class ToolHandlers {
       // 5. Create optional post-process Code node
       let postProcessNodeId: string | undefined;
       if (cfg.postProcessCode) {
-        const postNode: any = await this.apiClient.post(
-          `/v2.0/flows/${flowId}/chart/nodes`,
-          {
-            type: "code",
-            extension: "@cognigy/basic-nodes",
-            mode: "append",
-            target: httpNodeId,
-            label: `${toolLabel} - Post-Process`,
-            config: { code: cfg.postProcessCode },
-          },
-        );
-        postProcessNodeId = postNode._id || postNode.id;
+        postProcessNodeId = await this.createWrappedCodeNode({
+          flowId,
+          target: httpNodeId,
+          label: `${toolLabel} - Post-Process`,
+          code: cfg.postProcessCode,
+        });
         if (postProcessNodeId) createdNodeIds.push(postProcessNodeId);
       }
 
@@ -3883,9 +4087,19 @@ export class ToolHandlers {
           findById(cfg.preProcessNodeId) ??
           findByLabelSuffix("Pre-Process", "code");
         if (preNode) {
+          const preId = preNode._id || preNode.id;
           await this.apiClient.patch(
-            `/v2.0/flows/${flowId}/chart/nodes/${preNode._id || preNode.id}`,
-            { config: { code: cfg.preProcessCode } },
+            `/v2.0/flows/${flowId}/chart/nodes/${preId}`,
+            {
+              config: {
+                code: wrapCodeWithErrorTrace({
+                  code: unwrapCode(cfg.preProcessCode),
+                  flowId,
+                  nodeId: preId,
+                  nodeLabel: preNode.label ?? `${toolLabel} - Pre-Process`,
+                }),
+              },
+            },
           );
           updatedFields.push("preProcessCode");
         } else if (cfg.preProcessNodeId) {
@@ -3893,13 +4107,11 @@ export class ToolHandlers {
             "Pre-process Code node with the provided preProcessNodeId was not found",
           );
         } else if (toolNode) {
-          await this.apiClient.post(`/v2.0/flows/${flowId}/chart/nodes`, {
-            type: "code",
-            extension: "@cognigy/basic-nodes",
-            mode: "append",
+          await this.createWrappedCodeNode({
+            flowId,
             target: data.toolNodeId,
             label: `${toolLabel} - Pre-Process`,
-            config: { code: cfg.preProcessCode },
+            code: cfg.preProcessCode,
           });
           updatedFields.push("preProcessCode");
         } else {
@@ -3914,9 +4126,19 @@ export class ToolHandlers {
           findById(cfg.postProcessNodeId) ??
           findByLabelSuffix("Post-Process", "code");
         if (postNode) {
+          const postId = postNode._id || postNode.id;
           await this.apiClient.patch(
-            `/v2.0/flows/${flowId}/chart/nodes/${postNode._id || postNode.id}`,
-            { config: { code: cfg.postProcessCode } },
+            `/v2.0/flows/${flowId}/chart/nodes/${postId}`,
+            {
+              config: {
+                code: wrapCodeWithErrorTrace({
+                  code: unwrapCode(cfg.postProcessCode),
+                  flowId,
+                  nodeId: postId,
+                  nodeLabel: postNode.label ?? `${toolLabel} - Post-Process`,
+                }),
+              },
+            },
           );
           updatedFields.push("postProcessCode");
         } else if (cfg.postProcessNodeId) {
@@ -3928,13 +4150,11 @@ export class ToolHandlers {
             findById(cfg.httpNodeId) ??
             findByLabelSuffix("HTTP Request", "httpRequest");
           if (httpAnchor) {
-            await this.apiClient.post(`/v2.0/flows/${flowId}/chart/nodes`, {
-              type: "code",
-              extension: "@cognigy/basic-nodes",
-              mode: "append",
+            await this.createWrappedCodeNode({
+              flowId,
               target: httpAnchor._id || httpAnchor.id,
               label: `${toolLabel} - Post-Process`,
-              config: { code: cfg.postProcessCode },
+              code: cfg.postProcessCode,
             });
             updatedFields.push("postProcessCode");
           } else {
@@ -4171,8 +4391,27 @@ export class ToolHandlers {
           }
         }
 
-        const apiConfig = data.config
-          ? transformConfigForApi(entry.type, data.config)
+        // Code nodes are wrapped in the standard error-trace envelope before
+        // they are written. The node id is not known yet, so a placeholder goes
+        // in now and is patched out below once the POST returns.
+        const wrapCode =
+          entry.type === "code" &&
+          data.errorTrace !== false &&
+          typeof data.config?.code === "string";
+        const configForCreate = wrapCode
+          ? {
+              ...data.config,
+              code: wrapCodeWithErrorTrace({
+                code: data.config!.code,
+                flowId,
+                nodeId: PENDING_NODE_ID,
+                nodeLabel: data.label,
+              }),
+            }
+          : data.config;
+
+        const apiConfig = configForCreate
+          ? transformConfigForApi(entry.type, configForCreate)
           : undefined;
 
         const createdNode: any = await this.apiClient.post(
@@ -4196,7 +4435,7 @@ export class ToolHandlers {
           (createdNode.parent &&
             (createdNode.parent._id || createdNode.parent.id));
 
-        const result = {
+        const result: Record<string, any> = {
           nodeId,
           type: entry.type,
           label: data.label,
@@ -4205,6 +4444,46 @@ export class ToolHandlers {
           mode,
           configApplied: data.config ? Object.keys(data.config) : [],
         };
+
+        if (wrapCode) {
+          // Second pass: the placeholder is now replaced with the real node id
+          // so a trace can be traced back to an exact node without a lookup.
+          try {
+            await this.apiClient.patch(
+              `/v2.0/flows/${flowId}/chart/nodes/${nodeId}`,
+              {
+                config: {
+                  code: wrapCodeWithErrorTrace({
+                    code: data.config!.code,
+                    flowId,
+                    nodeId,
+                    nodeLabel: data.label,
+                  }),
+                },
+              },
+            );
+            result.errorTrace = { wrapped: true, nodeIdEmbedded: true };
+          } catch {
+            // The node exists and is wrapped; only the id literal is stale.
+            result.errorTrace = { wrapped: true, nodeIdEmbedded: false };
+          }
+
+          if (data.errorGuard !== false) {
+            try {
+              result.errorGuard = await this.createErrorGuard({
+                flowId,
+                codeNodeId: nodeId,
+                codeNodeLabel: data.label,
+                errorHandlerFlowId: data.errorHandlerFlowId,
+              });
+            } catch (err: any) {
+              result.errorGuard = {
+                created: false,
+                error: err?.message ?? String(err),
+              };
+            }
+          }
+        }
 
         if (missingInitAppSession) {
           return withRenderSuggestion(
@@ -4316,7 +4595,31 @@ export class ToolHandlers {
               data.nodeId,
             );
           } else {
-            const transformed = transformConfigForApi(nodeType, data.config);
+            let configToApply = data.config;
+
+            // Re-wrap edited code. The incoming code may be raw or a wrapped
+            // copy read back from the node, so unwrap first — otherwise each
+            // edit would nest another try/catch layer.
+            if (
+              nodeType === "code" &&
+              data.errorTrace !== false &&
+              typeof data.config.code === "string"
+            ) {
+              const priorId =
+                embeddedNodeId(existingConfig.code ?? "") ?? data.nodeId;
+              configToApply = {
+                ...data.config,
+                code: wrapCodeWithErrorTrace({
+                  code: unwrapCode(data.config.code),
+                  flowId,
+                  nodeId: priorId,
+                  nodeLabel:
+                    data.label ?? existingNode?.label ?? "(unlabelled)",
+                }),
+              };
+            }
+
+            const transformed = transformConfigForApi(nodeType, configToApply);
             patchPayload.config = deepMerge(existingConfig, transformed);
           }
         }
