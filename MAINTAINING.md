@@ -20,7 +20,7 @@ npm clones this repo, installs its dependencies, runs the `prepare` hook (`scrip
 
 Two consequences worth knowing:
 
-- **The first cold start is slow** — a clone, a full dependency install and a TypeScript build, on the order of a minute. npm caches the result per commit, so later starts are fast. Clearing the npm cache or moving to a new machine pays it again.
+- **The first cold start is slower than an npm install** — a clone, a dependency install and a TypeScript build, measured at ~22s. npm caches the result per commit, so later starts are fast. Clearing the npm cache or moving to a new machine pays it again.
 - **The spec tracks the default branch.** Whatever is on `main` is what runs. To freeze a known-good build, append a tag or commit: `github:pb-crackers/cognigy-plugin#v1.15.1`.
 
 ### The trap to watch for
