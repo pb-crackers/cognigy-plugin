@@ -328,6 +328,10 @@ export const manageFlowNodesSchema = z.object({
   parentNodeId: idSchema.optional(),
   mode: z.enum(["append", "appendChild"]).optional(),
   config: z.record(z.any()).optional(),
+  // code node error handling (create/update) — see utils/errorTrace.ts
+  errorTrace: z.boolean().optional(),
+  errorGuard: z.boolean().optional(),
+  errorHandlerFlowId: z.string().min(1).optional(),
   // render operation
   focus: z.union([idSchema, z.array(idSchema)]).optional(),
   format: z.enum(["ascii", "mermaid", "both"]).optional(),

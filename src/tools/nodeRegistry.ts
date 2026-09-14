@@ -117,6 +117,24 @@ export const NODE_REGISTRY: Record<string, NodeRegistryEntry> = {
     requiredConfigKeys: ["code"],
   },
 
+  executeFlow: {
+    type: "executeFlow",
+    extension: "@cognigy/basic-nodes",
+    category: "logic",
+    summary:
+      "Execute another flow like a function call, then return and continue the current flow (unlike goTo, which switches permanently)",
+    placement: "flow",
+    configKeys: [
+      "flowId",
+      "nodeId",
+      "flowNode",
+      "parseIntents",
+      "parseKeyphrases",
+      "absorbContext",
+    ],
+    requiredConfigKeys: [],
+  },
+
   goTo: {
     type: "goTo",
     extension: "@cognigy/basic-nodes",

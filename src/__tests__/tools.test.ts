@@ -2285,7 +2285,7 @@ describe("ToolHandlers v2", () => {
       const patchBody = api.patch.mock.calls[0][1];
       expect(patchBody.config).not.toHaveProperty("transpiled");
       expect(patchBody.config).not.toHaveProperty("hasError");
-      expect(patchBody.config.code).toBe("input.ok = 1;");
+      expect(patchBody.config.code).toContain("input.ok = 1;");
     });
   });
 

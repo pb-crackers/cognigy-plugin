@@ -243,13 +243,106 @@ Then send the full new `code` string on `update` (config is merged; `code` is re
 }
 ```
 
+#### Automatic error handling (you get this for free — do not hand-roll it)
+
+An uncaught throw inside a Code Node **stops flow execution outright**: the turn
+ends, the caller gets an empty response, and nothing is logged. `hasError` only
+reports *transpile* failures and `input.codeNodeError` only covers timeouts and
+event-limit breaches, so a plain runtime `TypeError` — reading a property of an
+`undefined` object is the classic one — leaves no trace at all.
+
+Every code node written through `manage_flow_nodes` (and every http-tool
+pre/post-process node) is therefore wrapped automatically:
+
+```
+input.hasError = false;
+try {
+/* >>> user code >>> */
+   ...exactly the code you supplied...
+/* <<< user code <<< */
+} catch (caughtError) {
+   ...builds the trace, sets input.hasError = true...
+}
+```
+
+**Write plain code and pass it as normal.** Do NOT add your own try/catch for
+this purpose, and do NOT try to reproduce the envelope — it is applied on both
+`create` and `update`, and re-wrapping is idempotent (the body is unwrapped
+first, so envelopes never nest).
+
+On error the standard trace is written to `context.errors` (appended),
+`context.lastError`, `input.errorTrace`, and the project logs:
+
+| Field                       | Source                                     |
+| --------------------------- | ------------------------------------------ |
+| `traceId`                   | generated per error                        |
+| `timestamp`                 | ISO 8601                                   |
+| `flowId` / `nodeId`         | baked in at authoring time                 |
+| `nodeLabel`                 | the node's label                           |
+| `flowName`                  | `input.flowName`                           |
+| `errorName` / `errorMessage`| the thrown error                           |
+| `stack`                     | first 12 frames                            |
+| `sessionId` / `userId`      | `input.*`                                  |
+| `toolId` / `toolArgs`       | `input.aiAgent.*` when inside a tool branch|
+
+There is no runtime accessor for a node's own id inside a Code Node, so `flowId`
+and `nodeId` are written in as literals. That is why `create` is a two-pass
+operation — the node is POSTed, then PATCHed once its id exists.
+
+An **Error Guard** is appended automatically after each code node:
+
+```
+code node (wrapped)
+  └─ if {{input.hasError}}
+       ├─ then → (empty — put the user-facing handling here)
+       └─ else → (continue)
+```
+
+The guard is a **branch point, not a handler**. The error is already logged by
+the code node's own catch block, so nothing logs it again here — a shared
+handler flow would just emit the same payload twice. What the caller should
+experience belongs to the flow that failed, so fill the then-branch in that
+flow: a `say`, a fallback value, a skip, a handover.
+
+If a project does want a shared side trip (a ticket, a webhook, a
+notification), pass `errorHandlerFlowId` and an Execute Flow node is added to
+the then-branch. Execute Flow **returns**, so the active flow still owns the
+user-facing experience afterwards. Do not use `goTo` for this — it switches
+flows permanently and never comes back.
+
+| Parameter            | Default | Effect                                              |
+| -------------------- | ------- | --------------------------------------------------- |
+| `errorTrace`         | `true`  | Set `false` to write the code completely unwrapped.  |
+| `errorGuard`         | `true`  | Set `false` to wrap the code but skip the guard node.|
+| `errorHandlerFlowId` | —       | Opt in to a shared side-trip flow in the then-branch. |
+
+---
+
+### executeFlow — Execute Flow (call and return)
+
+Category: logic
+
+Run another flow like a function call, then **return** and continue the current
+flow. Use this — not `goTo` — whenever the other flow is a subroutine (error
+handling, logging, a shared verification step). Context changes made by the
+target flow are visible after it returns.
+
+**Config:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| flowId | string | No | Target flow reference ID |
+| nodeId | string | No | Target node ID; must be marked as an Entrypoint in the target flow |
+| parseIntents | boolean | No | Re-parse intents in the target flow (default on in Cognigy) |
+| parseKeyphrases | boolean | No | Re-parse slots/keyphrases in the target flow |
+| absorbContext | boolean | No | Apply the target flow's default context on entry |
+
 ---
 
 ### goTo — Go To Node/Flow
 
 Category: logic
 
-Jump execution to another flow or a specific node.
+Jump execution to another flow or a specific node. The conversation does NOT come back — for a call-and-return subroutine use `executeFlow` instead.
 
 **Config:**
 | Field | Type | Required | Description |
