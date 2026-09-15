@@ -31,6 +31,11 @@ If an upstream merge restores the npm pin in any manifest, the plugin silently r
 
 Nothing arrives automatically. Pull when you want to:
 
+**Do not use the GitHub Releases API to decide whether you are behind.** Upstream's
+published releases lag their actual version: `releases/latest` reported v1.15.1
+while upstream's `main` was already on 1.19.0. Compare the `version` field in
+`package.json` on each repo's `main` instead. The upstream-watch routine does this.
+
 ```bash
 git fetch upstream
 git merge upstream/main
@@ -62,6 +67,26 @@ git remote add upstream https://github.com/Cognigy/cognigy-plugin.git
 | `plugin/skills/flow-nodes/SKILL.md`                                    | Low               | The error-handling section under `### code`.                                                                                                                                                         |
 
 Deliberately kept small: almost all the logic lives in `errorTrace.ts`, which cannot conflict. The call sites in `handlers.ts` are a few lines each.
+
+### Resolutions from the 1.15.1 → 1.19.0 merge
+
+Seven conflicts, all of them predicted by the table above:
+
+| Conflict                | Resolution                                                                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The four manifests      | Took upstream's `version` (1.19.0), kept the fork's `github:` engine spec.                                                                                    |
+| `.releaserc.json`       | Upstream deleted `scripts/build-gemini-extension.mjs`, so the fork's `prepareCmd` referenced a missing file. Took upstream's shape minus `npm publish`.       |
+| `src/schemas/tools.ts`  | Upstream reshaped `createToolSchema` (added `flowId`/`parentNodeId` plus refines). Took their structure and re-added `errorGuard` to both tool config blocks. |
+| `src/tools/handlers.ts` | One conflict. Upstream added a code-node runtime-API hint that returns early; the fork's wrap + guard must run first. Both kept, fork's block first.          |
+
+Upstream's new hint analyses `data.config.code` — the author's code, not the
+wrapped form — so the envelope's own `api.*` calls are not flagged. Keep it that
+way if that code moves.
+
+Upstream's new hint test asserted `api.post` was called exactly once, which the
+fork's guard node breaks. It now counts posts of `type: "code"` instead. Prefer
+that shape over raw call counts: the node chain grows, and positional or
+count-based assertions fail for the wrong reason when it does.
 
 ### After any merge, check these three things
 

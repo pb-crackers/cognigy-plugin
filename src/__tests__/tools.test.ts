@@ -97,7 +97,9 @@ describe("ToolHandlers v2", () => {
         .mockResolvedValueOnce({
           items: [{ _id: ID.entry, isEntryPoint: true }],
         })
-        .mockResolvedValueOnce({ items: [{ _id: ID.llm }] })
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.llm, connectionId: "conn-1" }],
+        })
         .mockResolvedValueOnce({ nodes: [] })
         .mockResolvedValueOnce({ items: [] });
 
@@ -251,6 +253,115 @@ describe("ToolHandlers v2", () => {
       expect(api.delete).toHaveBeenCalledWith(
         `/v2.0/flows/${ID.flow}/chart/nodes/${placeholderToolId}`,
       );
+    });
+
+    it("leaves real tool children alone when the placeholder sweep would match several by type", async () => {
+      const realToolA = "aaaaaaaaaaaaaaaaaaaaa001";
+      const realToolB = "aaaaaaaaaaaaaaaaaaaaa002";
+      const placeholderToolId = "aaaaaaaaaaaaaaaaaaaaa999";
+
+      api.post
+        .mockResolvedValueOnce({ _id: ID.agent, referenceId: "ref-uuid" })
+        .mockResolvedValueOnce({ _id: ID.flow, referenceId: "flow-uuid" })
+        .mockResolvedValueOnce({ _id: ID.node })
+        .mockResolvedValueOnce({ _id: ID.endpoint, URLToken: "abc123" });
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.llm, connectionId: "conn-1" }],
+        })
+        // The parent already carries two real tools next to the placeholder —
+        // only the marked one may be deleted.
+        .mockResolvedValueOnce({
+          relations: [
+            {
+              node: ID.node,
+              children: [realToolA, realToolB, placeholderToolId],
+            },
+          ],
+          nodes: [
+            { _id: realToolA, type: "aiAgentJobTool", label: "Fetch Weather" },
+            { _id: realToolB, type: "aiAgentJobTool", label: "Send Email" },
+            {
+              _id: placeholderToolId,
+              type: "aiAgentJobTool",
+              preview: "unlock_account",
+            },
+          ],
+        });
+      api.delete.mockResolvedValue({});
+
+      await h.handleToolCall("create_ai_agent", baseArgs);
+
+      expect(api.delete).toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${placeholderToolId}`,
+      );
+      expect(api.delete).not.toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${realToolA}`,
+      );
+      expect(api.delete).not.toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${realToolB}`,
+      );
+    });
+
+    it("reports a job-node failure as the node step, not the endpoint step", async () => {
+      api.post
+        .mockResolvedValueOnce({ _id: ID.agent, referenceId: "ref-uuid" })
+        .mockResolvedValueOnce({ _id: ID.flow, referenceId: "flow-uuid" })
+        .mockRejectedValueOnce(new Error("Error while reading ChartData"));
+      api.get.mockResolvedValueOnce({
+        items: [{ _id: ID.entry, isEntryPoint: true }],
+      });
+      api.delete.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", baseArgs);
+
+      // The endpoint is created after the node, so "endpoint" would be a lie.
+      expect(result.failed.step).toBe("node");
+      expect(result.failed.error).toContain("ChartData");
+      expect(api.delete).toHaveBeenCalledWith(`/v2.0/flows/${ID.flow}`);
+      expect(api.delete).toHaveBeenCalledWith(`/v2.0/aiagents/${ID.agent}`);
+    });
+
+    it("reports both the knowledge-tool failure and the unconnected LLM", async () => {
+      api.post
+        .mockResolvedValueOnce({ _id: ID.agent, referenceId: "ref-uuid" })
+        .mockResolvedValueOnce({ _id: ID.flow, referenceId: "flow-uuid" })
+        .mockResolvedValueOnce({ _id: ID.node })
+        // The knowledge tool POST fails — swallowed, reported as a warning.
+        .mockRejectedValueOnce(new Error("Knowledge store not found"))
+        .mockResolvedValueOnce({ _id: ID.endpoint, URLToken: "abc123" });
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        // The only chat model in the project has no connection.
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.llm, referenceId: "lonely-ref", isDefault: true }],
+        })
+        .mockResolvedValueOnce({ nodes: [] })
+        .mockResolvedValueOnce({ items: [] });
+      api.patch.mockResolvedValue({});
+      api.delete.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", {
+        ...baseArgs,
+        knowledgeStoreReferenceId: ID.ks,
+      });
+
+      // Neither concern may swallow the other: the LLM verdict is what stops
+      // the caller from trusting talk_to_agent.
+      expect(result.llmStatus).toBe("configured");
+      expect(result.llmConnected).toBe(false);
+      expect(result._hints.warning).toContain(
+        "knowledge tool failed to provision",
+      );
+      expect(result._hints.warning).toContain("no connection");
+      expect(result._hints.action).toContain("create_tool");
+      expect(result._hints.action).toContain("update_ai_agent");
+      expect(result._hints.action).toContain("Do not call talk_to_agent");
     });
   });
 
@@ -695,6 +806,229 @@ describe("ToolHandlers v2", () => {
       });
       expect(llmPayload).not.toHaveProperty("apiType");
     });
+
+    it("creates an awsBedrock LLM with an access-key connection and region metadata", async () => {
+      const mockBedrockLlm = {
+        _id: ID.llm,
+        referenceId: "llm-ref-uuid",
+        name: "amazon.nova-pro-v1:0",
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        connectionId: "conn-ref-uuid",
+        isDefault: true,
+        awsBedrock: { region: "eu-central-1" },
+      };
+      const mockConn = { _id: "conn1", referenceId: "conn-ref-uuid" };
+      api.post
+        .mockResolvedValueOnce(mockConn)
+        .mockResolvedValueOnce(mockBedrockLlm)
+        .mockResolvedValueOnce(mockTestSuccess);
+
+      const result = await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "eu-central-1",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "secret123",
+      });
+
+      expect(api.post).toHaveBeenCalledWith(
+        "/v2.0/connections",
+        expect.objectContaining({
+          type: "AwsBedrockProvider",
+          extension: "@cognigy/generative-ai-provider",
+          fields: { accessKeyId: "AKIA123", secretAccessKey: "secret123" },
+        }),
+      );
+      expect(api.post).toHaveBeenCalledWith(
+        "/v2.0/largelanguagemodels",
+        expect.objectContaining({
+          modelType: "amazon.nova-pro-v1:0",
+          provider: "awsBedrock",
+          awsBedrock: { region: "eu-central-1" },
+        }),
+      );
+      expect(result.awsBedrock).toEqual({ region: "eu-central-1" });
+    });
+
+    it("creates an awsBedrock IAM-role connection and includes customModel metadata", async () => {
+      const mockConn = { _id: "conn1", referenceId: "conn-ref-uuid" };
+      api.post
+        .mockResolvedValueOnce(mockConn)
+        .mockResolvedValueOnce({
+          ...mockLlm,
+          provider: "awsBedrock",
+          modelType: "custom-model",
+        })
+        .mockResolvedValueOnce(mockTestSuccess);
+
+      await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "custom-model",
+        customModel: "anthropic.claude-sonnet-4-20250514-v1:0",
+        region: "us-east-1",
+        roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+      });
+
+      expect(api.post).toHaveBeenCalledWith(
+        "/v2.0/connections",
+        expect.objectContaining({
+          type: "AwsBedrockProviderIamRole",
+          fields: { roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock" },
+        }),
+      );
+      const llmPayload = api.post.mock.calls.find(
+        (call: any[]) => call[0] === "/v2.0/largelanguagemodels",
+      )?.[1];
+      expect(llmPayload.awsBedrock).toEqual({
+        region: "us-east-1",
+        customModel: "anthropic.claude-sonnet-4-20250514-v1:0",
+      });
+      // Display name falls back to customModel
+      expect(llmPayload.name).toBe("anthropic.claude-sonnet-4-20250514-v1:0");
+    });
+
+    it("includes location and geo in the awsBedrock metadata", async () => {
+      const mockConn = { _id: "conn1", referenceId: "conn-ref-uuid" };
+      api.post
+        .mockResolvedValueOnce(mockConn)
+        .mockResolvedValueOnce({
+          ...mockLlm,
+          provider: "awsBedrock",
+          modelType: "amazon.nova-pro-v1:0",
+        })
+        .mockResolvedValueOnce(mockTestSuccess);
+
+      await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "eu-central-1",
+        location: "geo",
+        geo: "eu",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "secret123",
+      });
+
+      const llmPayload = api.post.mock.calls.find(
+        (call: any[]) => call[0] === "/v2.0/largelanguagemodels",
+      )?.[1];
+      expect(llmPayload.awsBedrock).toEqual({
+        region: "eu-central-1",
+        location: "geo",
+        geo: "eu",
+      });
+    });
+
+    it("returns a bedrock-specific error when no AWS credentials provided", async () => {
+      const result = await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+      });
+
+      expect(result.error).toContain("accessKeyId");
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("reuses an existing awsBedrock connection of either Bedrock type", async () => {
+      api.get.mockResolvedValueOnce({
+        items: [
+          {
+            _id: "conn1",
+            referenceId: "bedrock-conn-uuid",
+            type: "AwsBedrockProviderIamRole",
+          },
+        ],
+      });
+      api.post
+        .mockResolvedValueOnce({ ...mockLlm, provider: "awsBedrock" })
+        .mockResolvedValueOnce(mockTestSuccess);
+
+      const result = await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        connectionId: "bedrock-conn-uuid",
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(api.post).not.toHaveBeenCalledWith(
+        "/v2.0/connections",
+        expect.anything(),
+      );
+      expect(api.post).toHaveBeenCalledWith(
+        "/v2.0/largelanguagemodels",
+        expect.objectContaining({ connectionId: "bedrock-conn-uuid" }),
+      );
+    });
+
+    it("rejects a connectionId whose type does not match the provider", async () => {
+      api.get.mockResolvedValueOnce({
+        items: [
+          {
+            _id: "conn1",
+            referenceId: "openai-conn-uuid",
+            type: "OpenAIProvider",
+          },
+        ],
+      });
+
+      const result = await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        connectionId: "openai-conn-uuid",
+      });
+
+      expect(result.error).toContain("OpenAIProvider");
+      expect(result.error).toContain("awsBedrock");
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("points IAM-role connection failures at the access-key fallback", async () => {
+      api.post.mockRejectedValueOnce(
+        new Error("This type is not enabled for your installation"),
+      );
+
+      const result = await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+      });
+
+      expect(result.error).toContain("not enabled for your installation");
+      expect(result._hints.action).toContain("accessKeyId");
+      expect(result._hints.action).toContain("secretAccessKey");
+    });
+
+    it("gives an AWS-specific hint when the awsBedrock connection test fails", async () => {
+      api.post
+        .mockResolvedValueOnce({ _id: "conn1", referenceId: "conn-ref-uuid" })
+        .mockResolvedValueOnce({ ...mockLlm, provider: "awsBedrock" })
+        .mockResolvedValueOnce(mockTestFailure);
+      api.delete.mockResolvedValue({});
+
+      const result = await h.handleToolCall("setup_llm", {
+        projectId: ID.project,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "wrong",
+      });
+
+      expect(result.error).toContain("connection test failed");
+      expect(result._hints.action).not.toContain("API key");
+      expect(result._hints.action).toContain("secretAccessKey");
+    });
   });
 
   // =========================================================================
@@ -893,7 +1227,7 @@ describe("ToolHandlers v2", () => {
       const result = await h.handleToolCall("list_resources", {
         resourceType: "tool",
       });
-      expect(result.error).toContain("aiAgentId is required");
+      expect(result.error).toContain("aiAgentId or flowId is required");
     });
 
     it("lists agents with filtered response", async () => {
@@ -930,6 +1264,53 @@ describe("ToolHandlers v2", () => {
 
       expect(result.items).toHaveLength(0);
       expect(result._hints).toBeDefined();
+    });
+
+    it("normalizes tool parentNodeId to a string id for every parent shape", async () => {
+      const toolB = "60d5ec49f1a2c8b1a4e0f0b1";
+      const toolC = "60d5ec49f1a2c8b1a4e0f0b2";
+      const toolD = "60d5ec49f1a2c8b1a4e0f0b3";
+      api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
+        items: [
+          { _id: ID.entry, isEntryPoint: true, type: "entry" },
+          { _id: ID.node, type: "aiAgentJob" },
+          {
+            _id: ID.tool,
+            type: "aiAgentJobTool",
+            label: "object_parent",
+            parent: { _id: ID.node },
+          },
+          {
+            _id: toolB,
+            type: "aiAgentJobTool",
+            label: "object_id_parent",
+            parent: { id: ID.node },
+          },
+          {
+            _id: toolC,
+            type: "knowledgeTool",
+            label: "snake_case_parent",
+            parent_id: ID.node,
+          },
+          {
+            _id: toolD,
+            type: "sendEmailTool",
+            label: "string_parent",
+            parent: ID.node,
+          },
+        ],
+      });
+
+      const result = await h.handleToolCall("list_resources", {
+        resourceType: "tool",
+        aiAgentId: ID.agent,
+      });
+
+      expect(result.items).toHaveLength(4);
+      for (const item of result.items) {
+        expect(typeof item.parentNodeId).toBe("string");
+        expect(item.parentNodeId).toBe(ID.node);
+      }
     });
 
     it("resolves tools via agent flow (only whitelisted types)", async () => {
@@ -1679,13 +2060,13 @@ describe("ToolHandlers v2", () => {
       expect(result.error).toContain("Could not find a flow");
     });
 
-    it("returns error when flow has no aiAgentJob node", async () => {
+    it("returns error when flow has no aiAgentJob (or llmPromptV2) node", async () => {
       api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
         items: [{ _id: ID.entry, isEntryPoint: true }],
       });
 
       const result = await h.handleToolCall("create_tool", baseArgs);
-      expect(result.error).toContain("No aiAgentJob node found");
+      expect(result.error).toContain("No aiAgentJob or llmPromptV2 node found");
     });
 
     it("creates a knowledge tool", async () => {
@@ -1817,6 +2198,7 @@ describe("ToolHandlers v2", () => {
           {
             _id: ID.tool,
             type: "aiAgentJobTool",
+            parentId: ID.node,
             label: "unlock_account",
             config: { toolId: "unlock_account", description: "Existing tool" },
           },
@@ -1841,6 +2223,71 @@ describe("ToolHandlers v2", () => {
       expect(api.post).not.toHaveBeenCalled();
     });
 
+    it("reuses a duplicate toolId when the existing node's parent is an object", async () => {
+      api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
+        items: [
+          { _id: ID.entry, isEntryPoint: true },
+          { _id: ID.node, type: "aiAgentJob" },
+          {
+            _id: ID.tool,
+            type: "aiAgentJobTool",
+            // Some API projections return the parent as an object, not an id.
+            parent: { _id: ID.node },
+            label: "unlock_account",
+            config: { toolId: "unlock_account", description: "Existing tool" },
+          },
+        ],
+      });
+
+      const result = await h.handleToolCall("create_tool", {
+        aiAgentId: ID.agent,
+        toolType: "tool",
+        name: "Unlock Account",
+        config: {
+          toolId: "unlock_account",
+          description: "Unlocks a locked user account",
+        },
+      });
+
+      expect(result.reusedExisting).toBe(true);
+      expect(result.toolId).toBe(ID.tool);
+      expect(result.toolNodeId).toBe(ID.tool);
+      expect(result.requestedToolId).toBe("unlock_account");
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("does not treat a same-toolId tool under another parent as a duplicate", async () => {
+      const otherJob = "60d5ec49f1a2c8b1a4e0f0aa";
+      api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
+        items: [
+          { _id: ID.entry, isEntryPoint: true },
+          { _id: ID.node, type: "aiAgentJob" },
+          {
+            _id: ID.tool,
+            type: "aiAgentJobTool",
+            parent: { _id: otherJob },
+            label: "unlock_account",
+            config: { toolId: "unlock_account", description: "Other agent" },
+          },
+        ],
+      });
+      api.post.mockResolvedValue({ _id: "60d5ec49f1a2c8b1a4e0f0ab" });
+
+      const result = await h.handleToolCall("create_tool", {
+        aiAgentId: ID.agent,
+        toolType: "tool",
+        name: "Unlock Account",
+        parentNodeId: ID.node,
+        config: {
+          toolId: "unlock_account",
+          description: "Unlocks a locked user account",
+        },
+      });
+
+      expect(result.reusedExisting).toBeUndefined();
+      expect(api.post).toHaveBeenCalled();
+    });
+
     it("reuses duplicate tool when existing node matches by label only", async () => {
       api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
         items: [
@@ -1849,6 +2296,7 @@ describe("ToolHandlers v2", () => {
           {
             _id: ID.tool,
             type: "aiAgentJobTool",
+            parentId: ID.node,
             label: "unlock_account",
             config: { description: "Existing tool without explicit toolId" },
           },
@@ -1870,6 +2318,110 @@ describe("ToolHandlers v2", () => {
       expect(result.toolNodeId).toBe(ID.tool);
       expect(result.requestedToolId).toBe("unlock_account");
       expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("reports the parent node the tool was attached to", async () => {
+      mockFlowWithJobNode();
+      api.post
+        .mockResolvedValueOnce({ _id: ID.tool })
+        .mockResolvedValueOnce({ _id: "60d5ec49f1a2c8b1a4e0f0ac" });
+
+      const result = await h.handleToolCall("create_tool", {
+        aiAgentId: ID.agent,
+        toolType: "tool",
+        name: "Unlock Account",
+        config: { toolId: "unlock_account", description: "d" },
+      });
+
+      expect(result.parentNodeId).toBe(ID.node);
+      expect(result.parentNodeType).toBe("aiAgentJob");
+    });
+
+    it("resolves the agent's own node in a mixed-parent flow addressed by aiAgentId", async () => {
+      api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
+        items: [
+          { _id: ID.entry, isEntryPoint: true },
+          { _id: "60d5ec49f1a2c8b1a4e0f0ad", type: "llmPromptV2" },
+          { _id: ID.node, type: "aiAgentJob" },
+        ],
+      });
+      api.post
+        .mockResolvedValueOnce({ _id: ID.tool })
+        .mockResolvedValueOnce({ _id: "60d5ec49f1a2c8b1a4e0f0ac" });
+
+      const result = await h.handleToolCall("create_tool", {
+        aiAgentId: ID.agent,
+        toolType: "tool",
+        name: "Unlock Account",
+        config: { toolId: "unlock_account", description: "d" },
+      });
+
+      // Naming the agent says which parent is meant — no mixed-flow refusal.
+      expect(result.error).toBeUndefined();
+      expect(result.parentNodeId).toBe(ID.node);
+      expect(result.parentNodeType).toBe("aiAgentJob");
+    });
+
+    it("reuses a duplicate toolId flow-wide when no node carries a parent reference", async () => {
+      api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
+        items: [
+          { _id: ID.entry, isEntryPoint: true },
+          { _id: ID.node, type: "aiAgentJob" },
+          // A projection that omits parentId everywhere: parent scoping cannot
+          // work, so the flow-wide match must still catch the duplicate.
+          {
+            _id: ID.tool,
+            type: "aiAgentJobTool",
+            label: "unlock_account",
+            config: { toolId: "unlock_account", description: "Existing tool" },
+          },
+        ],
+      });
+
+      const result = await h.handleToolCall("create_tool", {
+        aiAgentId: ID.agent,
+        toolType: "tool",
+        name: "Unlock Account",
+        config: { toolId: "unlock_account", description: "d" },
+      });
+
+      expect(result.reusedExisting).toBe(true);
+      expect(result.toolId).toBe(ID.tool);
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("keeps duplicate matching parent-scoped as soon as any node carries a parent", async () => {
+      api.get.mockResolvedValueOnce({ flowId: ID.flow }).mockResolvedValueOnce({
+        items: [
+          { _id: ID.entry, isEntryPoint: true },
+          { _id: ID.node, type: "aiAgentJob" },
+          // This child proves the projection does carry parent references, so
+          // the unparented same-toolId node below is not treated as a
+          // duplicate under the chosen parent.
+          {
+            _id: "60d5ec49f1a2c8b1a4e0f0ae",
+            type: "aiAgentToolAnswer",
+            parentId: ID.tool,
+          },
+          {
+            _id: ID.tool,
+            type: "aiAgentJobTool",
+            label: "unlock_account",
+            config: { toolId: "unlock_account", description: "Existing tool" },
+          },
+        ],
+      });
+      api.post.mockResolvedValue({ _id: "60d5ec49f1a2c8b1a4e0f0ab" });
+
+      const result = await h.handleToolCall("create_tool", {
+        aiAgentId: ID.agent,
+        toolType: "tool",
+        name: "Unlock Account",
+        config: { toolId: "unlock_account", description: "d" },
+      });
+
+      expect(result.reusedExisting).toBeUndefined();
+      expect(api.post).toHaveBeenCalled();
     });
 
     it("creates resolve node with default answer for general-purpose tool", async () => {
@@ -2187,6 +2739,116 @@ describe("ToolHandlers v2", () => {
 
       expect(result.error).toContain("nodeId is required");
       expect(api.get).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("manage_flow_nodes — Code Node runtime hints", () => {
+    const codeNodeId = "60d5ec49f1a2c8b1a4e0f013";
+    const toolNodeId = "60d5ec49f1a2c8b1a4e0f014";
+
+    it("create writes code that uses unavailable runtime APIs and hints about it", async () => {
+      api.post.mockResolvedValueOnce({ _id: codeNodeId, parentId: toolNodeId });
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: toolNodeId,
+        mode: "appendChild",
+        nodeType: "code",
+        label: "Lookup",
+        config: { code: "const r = await fetch('https://x');" },
+      });
+      expect(result.nodeId).toBe(codeNodeId);
+      // Exactly one code node is written. The count is not asserted directly:
+      // this fork also appends an error guard, so a raw call count would
+      // couple this test to how many nodes the guard needs.
+      expect(
+        api.post.mock.calls.filter(([, b]: any) => b?.type === "code"),
+      ).toHaveLength(1);
+      expect(result._hints?.warning).toContain("fetch()/XMLHttpRequest");
+      expect(result._hints?.action).toContain("manage_flow_nodes update");
+    });
+
+    it("create stays quiet for code the runtime supports", async () => {
+      api.post.mockResolvedValueOnce({ _id: codeNodeId, parentId: toolNodeId });
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: toolNodeId,
+        mode: "appendChild",
+        nodeType: "code",
+        label: "Cleanup",
+        config: { code: "context.done = true; api.say('done');" },
+      });
+      expect(result.nodeId).toBe(codeNodeId);
+      expect(result._hints?.warning).toBeUndefined();
+    });
+
+    it("update PATCHes and hints, one sentence per unavailable API", async () => {
+      api.get
+        .mockResolvedValueOnce({
+          _id: codeNodeId,
+          type: "code",
+          config: { code: "old" },
+        })
+        .mockResolvedValueOnce({
+          _id: codeNodeId,
+          type: "code",
+          config: { code: "new", hasError: false },
+        });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "const c = require('xml-js'); api.setState('x');" },
+      });
+      expect(result.updated).toBe(true);
+      expect(api.patch).toHaveBeenCalledTimes(1);
+      expect(result._hints?.warning).toContain("require()/import");
+      expect(result._hints?.warning).toContain("Intent Conditions");
+    });
+
+    it("update applies the hints only to code nodes", async () => {
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "say",
+        config: { text: "old" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "await fetch('x')" },
+      });
+      expect(result.updated).toBe(true);
+      expect(api.patch).toHaveBeenCalledTimes(1);
+      expect(result._hints?.warning).toBeUndefined();
+    });
+
+    it("update keeps the hasError warning first when both apply", async () => {
+      api.get
+        .mockResolvedValueOnce({
+          _id: codeNodeId,
+          type: "code",
+          config: { code: "old" },
+        })
+        .mockResolvedValueOnce({
+          _id: codeNodeId,
+          type: "code",
+          config: { code: "bad", hasError: true },
+        });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "await fetch('x'); const x: =" },
+      });
+      expect(result._hints?.warning).toMatch(
+        /^Node saved, but config.hasError/,
+      );
+      expect(result._hints?.warning).toContain("fetch()/XMLHttpRequest");
     });
   });
 
@@ -2595,6 +3257,290 @@ describe("ToolHandlers v2", () => {
 
       expect(result.llmStatus).toBe("unknown");
       expect(result._hints).toBeDefined();
+    });
+
+    it("returns llmStatus unknown when the project only has embedding models", async () => {
+      const mockAgent = {
+        _id: ID.agent,
+        referenceId: "ref-uuid",
+        name: "Test Agent",
+      };
+      const mockFlow = { _id: ID.flow, referenceId: "flow-uuid", name: "Flow" };
+      const mockEndpoint = {
+        _id: ID.endpoint,
+        URLToken: "xyz",
+        channel: "rest",
+      };
+
+      api.post
+        .mockResolvedValueOnce(mockAgent)
+        .mockResolvedValueOnce(mockFlow)
+        .mockResolvedValueOnce({ _id: ID.node })
+        .mockResolvedValueOnce(mockEndpoint);
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        .mockResolvedValueOnce({
+          items: [
+            {
+              _id: ID.llm,
+              referenceId: "embedding-ref",
+              isDefault: true,
+              connectionId: "conn-1",
+              modelType: "text-embedding-ada-002",
+            },
+          ],
+        });
+      api.patch.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", {
+        projectId: ID.project,
+        name: "Test Agent",
+        description: "A test agent",
+      });
+
+      // No LLM is wired to the job node — an embedding model can't answer.
+      const llmPatch = api.patch.mock.calls.find(
+        (c: any[]) => c[1]?.config?.llmProviderReferenceId !== undefined,
+      );
+      expect(llmPatch).toBeUndefined();
+      expect(result.llmStatus).toBe("unknown");
+      expect(result.llmConnected).toBeUndefined();
+      expect(result._hints.warning).toContain("Could not verify LLM resource");
+      expect(result._hints.action).toContain("manage_packages");
+    });
+
+    it("asks the platform for aiAgent-capable models and reports the pick", async () => {
+      const mockAgent = {
+        _id: ID.agent,
+        referenceId: "ref-uuid",
+        name: "Test Agent",
+      };
+      const mockFlow = { _id: ID.flow, referenceId: "flow-uuid", name: "Flow" };
+      const mockEndpoint = {
+        _id: ID.endpoint,
+        URLToken: "abc123",
+        channel: "rest",
+      };
+
+      api.post
+        .mockResolvedValueOnce(mockAgent)
+        .mockResolvedValueOnce(mockFlow)
+        .mockResolvedValueOnce({ _id: ID.node })
+        .mockResolvedValueOnce(mockEndpoint);
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        .mockResolvedValueOnce({
+          items: [
+            {
+              _id: ID.llm,
+              referenceId: "llm-ref-uuid",
+              isDefault: true,
+              connectionId: "conn-1",
+              modelType: "gpt-4o",
+            },
+          ],
+        });
+      api.patch.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", {
+        projectId: ID.project,
+        name: "Test Agent",
+        description: "A test agent",
+      });
+
+      // The platform's own use-case filter decides which models can drive an
+      // AI Agent Job node — no guessing from model strings.
+      expect(api.get).toHaveBeenCalledWith("/new/v2.0/largelanguagemodels", {
+        params: { projectId: ID.project, useCase: "aiAgent" },
+      });
+      expect(result.llm).toEqual({
+        referenceId: "llm-ref-uuid",
+        isDefault: true,
+        connected: true,
+      });
+      expect(result._hints).toBeUndefined();
+    });
+
+    it("refetches the unfiltered LLM list when the useCase filter is unsupported", async () => {
+      const mockAgent = {
+        _id: ID.agent,
+        referenceId: "ref-uuid",
+        name: "Test Agent",
+      };
+      const mockFlow = { _id: ID.flow, referenceId: "flow-uuid", name: "Flow" };
+      const mockEndpoint = {
+        _id: ID.endpoint,
+        URLToken: "abc123",
+        channel: "rest",
+      };
+
+      api.post
+        .mockResolvedValueOnce(mockAgent)
+        .mockResolvedValueOnce(mockFlow)
+        .mockResolvedValueOnce({ _id: ID.node })
+        .mockResolvedValueOnce(mockEndpoint);
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        // An older platform does not know the useCase parameter.
+        .mockRejectedValueOnce(
+          Object.assign(new Error("Bad Request"), { status: 400 }),
+        )
+        .mockResolvedValueOnce({
+          items: [
+            {
+              _id: ID.llm,
+              referenceId: "legacy-ref",
+              isDefault: true,
+              connectionId: "conn-1",
+              modelType: "gpt-4o",
+            },
+          ],
+        });
+      api.patch.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", {
+        projectId: ID.project,
+        name: "Test Agent",
+        description: "A test agent",
+      });
+
+      expect(api.get).toHaveBeenCalledWith("/v2.0/largelanguagemodels", {
+        params: { projectId: ID.project },
+      });
+      expect(result.llmStatus).toBe("configured");
+      expect(api.patch).toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${ID.node}`,
+        {
+          config: { aiAgent: "ref-uuid", llmProviderReferenceId: "legacy-ref" },
+        },
+      );
+    });
+
+    it("never picks a connected embedding model over a text model", async () => {
+      const mockAgent = {
+        _id: ID.agent,
+        referenceId: "ref-uuid",
+        name: "Test Agent",
+      };
+      const mockFlow = { _id: ID.flow, referenceId: "flow-uuid", name: "Flow" };
+      const mockEndpoint = {
+        _id: ID.endpoint,
+        URLToken: "abc123",
+        channel: "rest",
+      };
+
+      api.post
+        .mockResolvedValueOnce(mockAgent)
+        .mockResolvedValueOnce(mockFlow)
+        .mockResolvedValueOnce({ _id: ID.node })
+        .mockResolvedValueOnce(mockEndpoint);
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        // Model strings from the plugin's own llm-providers skill that the
+        // old literal "embedding" check did not catch.
+        .mockResolvedValueOnce({
+          items: [
+            {
+              _id: "a".repeat(24),
+              referenceId: "titan-embed-ref",
+              connectionId: "conn-1",
+              modelType: "amazon.titan-embed-text-v2:0",
+            },
+            {
+              _id: "b".repeat(24),
+              referenceId: "pharia-embedding-ref",
+              connectionId: "conn-2",
+              modelType: "Pharia-1-Embedding-4608",
+            },
+            {
+              _id: "c".repeat(24),
+              referenceId: "chat-ref",
+              isDefault: true,
+              connectionId: "conn-3",
+              modelType: "gpt-4o",
+            },
+          ],
+        });
+      api.patch.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", {
+        projectId: ID.project,
+        name: "Test Agent",
+        description: "A test agent",
+      });
+
+      expect(api.patch).toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${ID.node}`,
+        { config: { aiAgent: "ref-uuid", llmProviderReferenceId: "chat-ref" } },
+      );
+      expect(result.llm.referenceId).toBe("chat-ref");
+      expect(result._hints).toBeUndefined();
+    });
+
+    it("warns when the project default is skipped for having no connection", async () => {
+      const mockAgent = {
+        _id: ID.agent,
+        referenceId: "ref-uuid",
+        name: "Test Agent",
+      };
+      const mockFlow = { _id: ID.flow, referenceId: "flow-uuid", name: "Flow" };
+      const mockEndpoint = {
+        _id: ID.endpoint,
+        URLToken: "abc123",
+        channel: "rest",
+      };
+
+      api.post
+        .mockResolvedValueOnce(mockAgent)
+        .mockResolvedValueOnce(mockFlow)
+        .mockResolvedValueOnce({ _id: ID.node })
+        .mockResolvedValueOnce(mockEndpoint);
+      api.get
+        .mockResolvedValueOnce({
+          items: [{ _id: ID.entry, isEntryPoint: true }],
+        })
+        .mockResolvedValueOnce({
+          items: [
+            {
+              _id: "a".repeat(24),
+              referenceId: "chosen-default-ref",
+              isDefault: true,
+              modelType: "gpt-4o",
+              // No connectionId — the user's default cannot answer yet.
+            },
+            {
+              _id: "b".repeat(24),
+              referenceId: "other-connected-ref",
+              connectionId: "conn-1",
+              modelType: "gpt-4o-mini",
+            },
+          ],
+        });
+      api.patch.mockResolvedValue({});
+
+      const result = await h.handleToolCall("create_ai_agent", {
+        projectId: ID.project,
+        name: "Test Agent",
+        description: "A test agent",
+      });
+
+      expect(result.llm).toEqual({
+        referenceId: "other-connected-ref",
+        isDefault: false,
+        connected: true,
+      });
+      expect(result._hints.warning).toContain("project default LLM");
+      expect(result._hints.warning).toContain("chosen-default-ref");
+      expect(result._hints.action).toContain("update_ai_agent");
+      expect(result._hints.action).toContain("chosen-default-ref");
     });
 
     it("returns explicit package-reuse guidance when a new project is auto-created without an LLM", async () => {

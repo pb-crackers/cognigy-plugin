@@ -95,6 +95,82 @@ describe("createAiAgentSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts agentNodeType llmPrompt with a systemPrompt", () => {
+    const result = schemas.createAiAgentSchema.parse({
+      name: "Prompt Agent",
+      agentNodeType: "llmPrompt",
+      systemPrompt: "You are a summarizer.",
+    });
+    expect(result.agentNodeType).toBe("llmPrompt");
+    expect(result.systemPrompt).toBe("You are a summarizer.");
+  });
+
+  it("accepts agentNodeType aiAgent with a knowledge store", () => {
+    const result = schemas.createAiAgentSchema.parse({
+      name: "Agent",
+      agentNodeType: "aiAgent",
+      knowledgeStoreReferenceId: "ks-ref-123",
+    });
+    expect(result.agentNodeType).toBe("aiAgent");
+  });
+
+  it("rejects unknown agentNodeType", () => {
+    expect(() =>
+      schemas.createAiAgentSchema.parse({
+        name: "Agent",
+        agentNodeType: "somethingElse",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects knowledgeStoreReferenceId together with agentNodeType llmPrompt", () => {
+    expect(() =>
+      schemas.createAiAgentSchema.parse({
+        name: "Agent",
+        agentNodeType: "llmPrompt",
+        knowledgeStoreReferenceId: "ks-ref-123",
+      }),
+    ).toThrow(/knowledgeStoreReferenceId/);
+  });
+
+  it("accepts agentNodeType llmPrompt with only a description", () => {
+    const result = schemas.createAiAgentSchema.parse({
+      name: "Prompt Agent",
+      agentNodeType: "llmPrompt",
+      description: "Summarizes the conversation for the agent desktop.",
+    });
+    expect(result.agentNodeType).toBe("llmPrompt");
+    expect(result.systemPrompt).toBeUndefined();
+  });
+
+  it("rejects agentNodeType llmPrompt without systemPrompt or description", () => {
+    expect(() =>
+      schemas.createAiAgentSchema.parse({
+        name: "Prompt Agent",
+        agentNodeType: "llmPrompt",
+      }),
+    ).toThrow(/requires a systemPrompt \(or description\)/);
+  });
+
+  it("rejects agentNodeType llmPrompt with a blank systemPrompt", () => {
+    expect(() =>
+      schemas.createAiAgentSchema.parse({
+        name: "Prompt Agent",
+        agentNodeType: "llmPrompt",
+        systemPrompt: "   \n  ",
+      }),
+    ).toThrow(/requires a systemPrompt \(or description\)/);
+  });
+
+  it("accepts agentNodeType aiAgent without systemPrompt or description", () => {
+    const result = schemas.createAiAgentSchema.parse({
+      name: "Agent",
+      agentNodeType: "aiAgent",
+    });
+    expect(result.agentNodeType).toBe("aiAgent");
+    expect(result.systemPrompt).toBeUndefined();
+  });
 });
 
 describe("updateAiAgentSchema", () => {
@@ -334,6 +410,221 @@ describe("setupLlmSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts awsBedrock with a named model and access keys", () => {
+    const result = schemas.setupLlmSchema.parse({
+      projectId: VALID_ID,
+      provider: "awsBedrock",
+      modelType: "amazon.nova-pro-v1:0",
+      region: "eu-central-1",
+      accessKeyId: "AKIA123",
+      secretAccessKey: "secret123",
+    });
+    expect(result.provider).toBe("awsBedrock");
+    expect(result.region).toBe("eu-central-1");
+  });
+
+  it("accepts awsBedrock with custom-model and customModel", () => {
+    const result = schemas.setupLlmSchema.parse({
+      projectId: VALID_ID,
+      provider: "awsBedrock",
+      modelType: "custom-model",
+      customModel: "anthropic.claude-sonnet-4-20250514-v1:0",
+      region: "us-east-1",
+      roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+    });
+    expect(result.customModel).toBe("anthropic.claude-sonnet-4-20250514-v1:0");
+  });
+
+  it("rejects awsBedrock without region", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "secret123",
+      }),
+    ).toThrow(/region/);
+  });
+
+  it("rejects awsBedrock with apiKey instead of AWS credentials", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        apiKey: "sk-nope",
+      }),
+    ).toThrow(/accessKeyId/);
+  });
+
+  it("rejects awsBedrock with an incomplete access key pair", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        accessKeyId: "AKIA123",
+      }),
+    ).toThrow(/secretAccessKey/);
+  });
+
+  it("rejects awsBedrock with both access keys and roleArn", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "secret123",
+        roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+      }),
+    ).toThrow(/roleArn/);
+  });
+
+  it("rejects awsBedrock customModel with a named modelType", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        customModel: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+      }),
+    ).toThrow(/custom-model/);
+  });
+
+  it("accepts awsBedrock with global location routing", () => {
+    const result = schemas.setupLlmSchema.parse({
+      projectId: VALID_ID,
+      provider: "awsBedrock",
+      modelType: "amazon.nova-pro-v1:0",
+      region: "eu-central-1",
+      location: "global",
+      accessKeyId: "AKIA123",
+      secretAccessKey: "secret123",
+    });
+    expect(result.location).toBe("global");
+  });
+
+  it("accepts awsBedrock with geo location routing and a geo boundary", () => {
+    const result = schemas.setupLlmSchema.parse({
+      projectId: VALID_ID,
+      provider: "awsBedrock",
+      modelType: "amazon.nova-pro-v1:0",
+      region: "eu-central-1",
+      location: "geo",
+      geo: "eu",
+      accessKeyId: "AKIA123",
+      secretAccessKey: "secret123",
+    });
+    expect(result.geo).toBe("eu");
+  });
+
+  it("rejects awsBedrock location 'geo' without a geo boundary", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "eu-central-1",
+        location: "geo",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "secret123",
+      }),
+    ).toThrow(/geo/);
+  });
+
+  it("rejects awsBedrock geo without location 'geo'", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "eu-central-1",
+        geo: "eu",
+        accessKeyId: "AKIA123",
+        secretAccessKey: "secret123",
+      }),
+    ).toThrow(/location is 'geo'/);
+  });
+
+  it("rejects location on other providers", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "openAI",
+        modelType: "gpt-4o",
+        apiKey: "sk-abc123",
+        location: "global",
+      }),
+    ).toThrow(/awsBedrock/);
+  });
+
+  it("rejects AWS-only fields on other providers", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "openAI",
+        modelType: "gpt-4o",
+        apiKey: "sk-abc123",
+        region: "us-east-1",
+      }),
+    ).toThrow(/awsBedrock/);
+  });
+
+  it("reports both roleArn conflict and incomplete key pair at once", () => {
+    const result = schemas.setupLlmSchema.safeParse({
+      projectId: VALID_ID,
+      provider: "awsBedrock",
+      modelType: "amazon.nova-pro-v1:0",
+      region: "us-east-1",
+      accessKeyId: "AKIA123",
+      roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+    });
+    expect(result.success).toBe(false);
+    const messages = result.success
+      ? []
+      : result.error.issues.map((issue) => issue.message);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("not both"),
+        expect.stringContaining("provided together"),
+      ]),
+    );
+  });
+
+  it("rejects inline credentials combined with connectionId", () => {
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "awsBedrock",
+        modelType: "amazon.nova-pro-v1:0",
+        region: "us-east-1",
+        roleArn: "arn:aws:iam::123456789012:role/cognigy-bedrock",
+        connectionId: "conn-ref-uuid",
+      }),
+    ).toThrow(/connectionId/);
+    expect(() =>
+      schemas.setupLlmSchema.parse({
+        projectId: VALID_ID,
+        provider: "openAI",
+        modelType: "gpt-4o",
+        apiKey: "sk-abc123",
+        connectionId: "conn-ref-uuid",
+      }),
+    ).toThrow(/connectionId/);
+  });
+
+  it("exports the provider and location enums used by the tool definition", () => {
+    expect(schemas.SETUP_LLM_PROVIDERS).toContain("awsBedrock");
+    expect(schemas.BEDROCK_LOCATIONS).toEqual(["region", "geo", "global"]);
+  });
 });
 
 describe("talkToAgentSchema", () => {
@@ -523,6 +814,23 @@ describe("listResourcesSchema", () => {
     expect(result.resourceType).toBe("agent");
   });
 
+  it("accepts flowId for the tool resource type", () => {
+    const result = schemas.listResourcesSchema.parse({
+      resourceType: "tool",
+      flowId: VALID_ID,
+    });
+    expect(result.flowId).toBe(VALID_ID);
+  });
+
+  it("rejects an invalid flowId", () => {
+    expect(() =>
+      schemas.listResourcesSchema.parse({
+        resourceType: "tool",
+        flowId: "not-a-valid-id",
+      }),
+    ).toThrow();
+  });
+
   it("accepts llm_model useCase filter", () => {
     const result = schemas.listResourcesSchema.parse({
       resourceType: "llm_model",
@@ -637,6 +945,26 @@ describe("deleteResourceSchema", () => {
     });
     expect(result.resourceType).toBe("project");
   });
+
+  it("accepts flowId as the tool-flow address", () => {
+    const result = schemas.deleteResourceSchema.parse({
+      resourceType: "tool",
+      id: VALID_ID,
+      flowId: VALID_ID,
+    });
+    expect(result.flowId).toBe(VALID_ID);
+    expect(result.aiAgentId).toBeUndefined();
+  });
+
+  it("rejects an invalid flowId", () => {
+    expect(() =>
+      schemas.deleteResourceSchema.parse({
+        resourceType: "tool",
+        id: VALID_ID,
+        flowId: "not-a-valid-id",
+      }),
+    ).toThrow();
+  });
 });
 
 describe("createToolSchema", () => {
@@ -648,6 +976,38 @@ describe("createToolSchema", () => {
       config: { url: "https://example.com" },
     });
     expect(result.toolType).toBe("http");
+  });
+
+  it("accepts flowId instead of aiAgentId", () => {
+    const result = schemas.createToolSchema.parse({
+      flowId: VALID_ID,
+      toolType: "tool",
+      name: "My Tool",
+      config: {},
+    });
+    expect(result.flowId).toBe(VALID_ID);
+    expect(result.aiAgentId).toBeUndefined();
+  });
+
+  it("rejects when neither aiAgentId nor flowId is provided", () => {
+    expect(() =>
+      schemas.createToolSchema.parse({
+        toolType: "tool",
+        name: "My Tool",
+        config: {},
+      }),
+    ).toThrow(/aiAgentId or flowId/);
+  });
+
+  it("rejects an invalid flowId", () => {
+    expect(() =>
+      schemas.createToolSchema.parse({
+        flowId: "not-a-valid-id",
+        toolType: "tool",
+        name: "My Tool",
+        config: {},
+      }),
+    ).toThrow();
   });
 
   it("rejects invalid tool type", () => {
@@ -693,6 +1053,39 @@ describe("createToolSchema", () => {
         name: "Tool",
         config: { url: "https://example.com", method: "OPTIONS" },
       }),
+    ).toThrow();
+  });
+});
+
+describe("updateToolSchema", () => {
+  it("accepts aiAgentId with toolNodeId", () => {
+    const result = schemas.updateToolSchema.parse({
+      aiAgentId: VALID_ID,
+      toolNodeId: VALID_ID,
+      name: "Renamed",
+    });
+    expect(result.aiAgentId).toBe(VALID_ID);
+  });
+
+  it("accepts flowId instead of aiAgentId", () => {
+    const result = schemas.updateToolSchema.parse({
+      flowId: VALID_ID,
+      toolNodeId: VALID_ID,
+      config: { description: "Updated" },
+    });
+    expect(result.flowId).toBe(VALID_ID);
+    expect(result.aiAgentId).toBeUndefined();
+  });
+
+  it("rejects when neither aiAgentId nor flowId is provided", () => {
+    expect(() =>
+      schemas.updateToolSchema.parse({ toolNodeId: VALID_ID }),
+    ).toThrow(/aiAgentId or flowId/);
+  });
+
+  it("rejects a missing toolNodeId", () => {
+    expect(() =>
+      schemas.updateToolSchema.parse({ flowId: VALID_ID }),
     ).toThrow();
   });
 });

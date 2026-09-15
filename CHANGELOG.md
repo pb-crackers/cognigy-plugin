@@ -1,3 +1,27 @@
+## [1.19.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.18.0...v1.19.0) (2026-09-15)
+
+### Features
+
+* **tools:** hint when Code Node code uses APIs the runtime does not have ([#45](https://github.com/Cognigy/cognigy-plugin/issues/45)) ([1b03482](https://github.com/Cognigy/cognigy-plugin/commit/1b03482587414e1c4a95f93873171ae2b0489f20)), closes [#41](https://github.com/Cognigy/cognigy-plugin/issues/41)
+
+## [1.18.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.17.0...v1.18.0) (2026-09-15)
+
+### Features
+
+* **tools:** support AWS Bedrock LLM provider in setup_llm ([#22](https://github.com/Cognigy/cognigy-plugin/issues/22)) ([ac1f3d9](https://github.com/Cognigy/cognigy-plugin/commit/ac1f3d916a9d936d3fa12700abcd3a12210c017b))
+
+## [1.17.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.16.0...v1.17.0) (2026-09-15)
+
+### Features
+
+* **installer:** drop Gemini CLI support (superseded by Antigravity) ([#32](https://github.com/Cognigy/cognigy-plugin/issues/32)) ([b622f0b](https://github.com/Cognigy/cognigy-plugin/commit/b622f0b258cc0ca4cac8aa5ca506b3dbe483c5e1))
+
+## [1.16.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.15.1...v1.16.0) (2026-09-15)
+
+### Features
+
+* **tools:** support the LLM Prompt node on explicit user request ([#42](https://github.com/Cognigy/cognigy-plugin/issues/42)) ([7798e9f](https://github.com/Cognigy/cognigy-plugin/commit/7798e9f36798a6ebb141164ccefb0b9cb78cd70f))
+
 ## [1.15.1](https://github.com/Cognigy/cognigy-plugin/compare/v1.15.0...v1.15.1) (2026-09-08)
 
 ### Bug Fixes
