@@ -35,7 +35,10 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const devRoot = join(repoRoot, ".dev-plugin");
 const DEV_MARKETPLACE = "cognigy-dev";
 const PROD_MARKETPLACE = "cognigy-plugin";
-const PROD_MARKETPLACE_SOURCE = "Cognigy/cognigy-plugin";
+// This fork's own repo, NOT Cognigy/cognigy-plugin. Restoring upstream here
+// would reinstall the stock plugin, whose manifests pin the npm engine — the
+// fork's engine would stop running with no error and no visible difference.
+const PROD_MARKETPLACE_SOURCE = "pb-crackers/cognigy-plugin";
 
 function claude(args, { allowFailure = false } = {}) {
   try {
