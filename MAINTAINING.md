@@ -23,6 +23,22 @@ Two consequences worth knowing:
 - **The first cold start is slower than an npm install** — a clone, a dependency install and a TypeScript build, measured at ~22s. npm caches the result per commit, so later starts are fast. Clearing the npm cache or moving to a new machine pays it again.
 - **The spec tracks the default branch.** Whatever is on `main` is what runs. To freeze a known-good build, append a tag or commit: `github:pb-crackers/cognigy-plugin#v1.15.1`.
 
+### Versions
+
+The fork's version is always `<upstream base>-pb.<n>` — currently `1.19.0-pb.1`.
+The base names the upstream release this is built on; the suffix keeps the
+number distinct from upstream's, which is the second half of the cache
+collision described below.
+
+`npm run version:fork` stamps it: no argument bumps the suffix, an upstream
+version rebases onto it (`npm run version:fork 1.20.0` → `1.20.0-pb.1`).
+`npm run merge:resolve` calls it for you during a merge. `check:manifest` fails
+if `package.json` is left on a plain upstream number.
+
+GitHub Actions have never run on this fork, so semantic-release is not
+rewriting versions. If Actions are ever enabled, it will compute its own number
+and the guard is what catches it.
+
 ### Why this fork's marketplace is named apart from upstream's
 
 `.claude-plugin/marketplace.json` names this marketplace **`cognigy-plugin-pb`**, not upstream's `cognigy-plugin`. That is load-bearing, not cosmetic.
@@ -79,11 +95,25 @@ while upstream's `main` was already on 1.19.0. Compare the `version` field in
 
 ```bash
 git fetch upstream
-git merge upstream/main
-# resolve conflicts (see below), then:
+git merge upstream/main     # conflicts are expected — see below
+npm run merge:resolve       # resolves the manifest/version boilerplate
+# resolve any remaining SOURCE conflicts by hand
 npm test && npm run check:manifest && npm run build
+git commit                  # complete the merge
 git push origin main
 ```
+
+`npm run merge:resolve` handles the conflicts that are identical every time —
+the four manifests, `package.json`, `.claude-plugin/marketplace.json` — by
+taking upstream's version, restoring the fork's `github:` engine spec and the
+fork's marketplace name, then re-stamping the fork version onto upstream's new
+base. It deliberately refuses to touch source conflicts: those need judgement,
+and quietly picking a side is how a merge loses a feature.
+
+Rehearsed against a simulated upstream 1.20.0: seven conflicts, all of them
+manifest boilerplate, all resolved by that one command, with upstream's change
+to `src/tools/handlers.ts` merging cleanly on its own and every fork feature
+intact.
 
 Anyone using the plugin picks the change up on their next cold start — or immediately with `/reload-plugins` if npx has to refetch.
 
