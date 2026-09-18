@@ -60,7 +60,7 @@ If the fork's version number ever needs to diverge further, a suffix (`1.19.0-pb
 npm run doctor
 ```
 
-Reports the registered marketplaces, which plugin is enabled, the engine spec in every cached manifest, and whether credentials resolve — and exits non-zero if Claude Code is running anything other than this fork. `npm run plugin:dev:off` runs it automatically, since switching back is when the wrong plugin tends to get left behind.
+Reports the registered marketplaces, which plugin is enabled, the engine spec in every cached manifest, whether credentials resolve, and — the one that matters most — whether the engine **actually starts and serves the fork's tools**. Exits non-zero if Claude Code is running anything other than this fork. Pass `--no-boot` to skip the boot check when offline. `npm run plugin:dev:off` runs it automatically, since switching back is when the wrong plugin tends to get left behind.
 
 It flags, among other things:
 
@@ -79,6 +79,36 @@ claude plugin install cognigy@cognigy-plugin-pb
 ```
 
 Then `/reload-plugins` in Claude Code.
+
+### Never nest npx in an install-time script
+
+The plugin installs from git, so npm runs `prepare` — and everything it calls —
+**inside** an npx install. A nested `npx` or `npm exec` there deadlocks: the
+inner process parks at 0% CPU forever, the TypeScript build never finishes,
+`dist/index.js` is never written, the `cognigy-mcp` bin does not exist, and the
+MCP server simply never appears. No error, no log.
+
+This happened: `build` used `npx tsc` and `prepare.mjs` used `npx husky`. Both
+now call the local binaries — npm already puts `node_modules/.bin` on PATH for
+lifecycle scripts, so the nesting bought nothing. `installScripts.test.ts`
+fails if `npx` reappears in either.
+
+It is nasty to diagnose because it only reproduces on a **cold npx cache**, and
+the `github:` spec tracks the default branch — so every push moves the commit
+npm resolves to and re-arms it for the next boot. Checking with
+`npm install github:…` does not reproduce it either: that path is not nested
+under npx.
+
+### Boot times
+
+|                                                 |                                         |
+| ----------------------------------------------- | --------------------------------------- |
+| Cold (no npx cache, or first boot after a push) | ~30s — clone, install, TypeScript build |
+| Warm                                            | ~3s                                     |
+
+The cold path runs close to a client's MCP startup timeout, so after pushing,
+run `npm run doctor`: it boots the engine end to end, which both verifies the
+push and leaves the npx cache warm for the next client start.
 
 ### The trap to watch for
 

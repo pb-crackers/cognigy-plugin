@@ -19,6 +19,7 @@
  *
  * Run: npm run doctor
  */
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -159,6 +160,113 @@ function safeReaddir(path) {
   } catch {
     return [];
   }
+}
+
+// --- 5. Does the engine actually start? ----------------------------------
+//
+// Every check above can pass while the server does not run at all: a nested
+// npx in an install-time script once deadlocked the build, so the bin was
+// never written and the MCP server silently never appeared. Booting it here
+// is the only check that would have caught that — and it warms the npx cache
+// as a side effect, which matters because every push moves the git HEAD the
+// spec resolves to and a cold boot takes ~30s versus ~3s warm.
+//
+// Skip with --no-boot when offline or in a hurry.
+async function bootCheck() {
+  const started = Date.now();
+  return new Promise((done) => {
+    const proc = spawn("npx", ["-y", "-p", ENGINE_SPEC, "cognigy-mcp"], {
+      env: {
+        ...process.env,
+        COGNIGY_API_BASE_URL:
+          creds?.COGNIGY_API_BASE_URL ?? "https://api-trial-us.cognigy.ai",
+        COGNIGY_API_KEY: creds?.COGNIGY_API_KEY ?? "doctor-probe",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let buf = "";
+    const finish = (result) => {
+      clearTimeout(timer);
+      try {
+        proc.kill();
+      } catch {
+        /* already gone */
+      }
+      done(result);
+    };
+    const timer = setTimeout(
+      () =>
+        finish({
+          failed:
+            "The engine did not respond within 120s. A cold install takes ~30s; far beyond that usually means an install-time script is hung (see installScripts.test.ts).",
+        }),
+      120000,
+    );
+
+    proc.stdout.on("data", (chunk) => {
+      buf += chunk.toString();
+      for (const line of buf.split("\n").slice(0, -1)) {
+        if (!line.trim()) continue;
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.id === 1) {
+          proc.stdin.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              method: "notifications/initialized",
+            }) + "\n",
+          );
+          proc.stdin.write(
+            JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) +
+              "\n",
+          );
+        }
+        if (msg.id === 2) {
+          const names = (msg.result?.tools ?? []).map((t) => t.name);
+          finish({
+            seconds: ((Date.now() - started) / 1000).toFixed(1),
+            toolCount: names.length,
+            hasForkTool: names.includes("manage_flows"),
+          });
+        }
+      }
+      buf = buf.slice(buf.lastIndexOf("\n") + 1);
+    });
+    proc.on("error", (err) => finish({ failed: err.message }));
+    proc.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "doctor", version: "1" },
+        },
+      }) + "\n",
+    );
+  });
+}
+
+if (!process.argv.includes("--no-boot")) {
+  const boot = await bootCheck();
+  if (boot.failed) {
+    problems.push(`The engine failed to start: ${boot.failed}`);
+  } else if (!boot.hasForkTool) {
+    problems.push(
+      `The engine started (${boot.toolCount} tools in ${boot.seconds}s) but does not expose manage_flows — that is the stock engine, not this fork.`,
+    );
+  } else {
+    ok.push(
+      `engine boots in ${boot.seconds}s, ${boot.toolCount} tools, fork-only manage_flows present`,
+    );
+  }
+} else {
+  notes.push("Boot check skipped (--no-boot).");
 }
 
 // --- Report ---------------------------------------------------------------
