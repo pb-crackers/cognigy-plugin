@@ -23,6 +23,47 @@ Two consequences worth knowing:
 - **The first cold start is slower than an npm install** — a clone, a dependency install and a TypeScript build, measured at ~22s. npm caches the result per commit, so later starts are fast. Clearing the npm cache or moving to a new machine pays it again.
 - **The spec tracks the default branch.** Whatever is on `main` is what runs. To freeze a known-good build, append a tag or commit: `github:pb-crackers/cognigy-plugin#v1.15.1`.
 
+### Why this fork's marketplace is named apart from upstream's
+
+`.claude-plugin/marketplace.json` names this marketplace **`cognigy-plugin-pb`**, not upstream's `cognigy-plugin`. That is load-bearing, not cosmetic.
+
+Claude Code caches a plugin at `<marketplace>/<plugin>/<version>`. While both repos were named `cognigy-plugin` and the fork had merged upstream to the same version number, that path was identical for two different repositories. A stale upstream entry left in the cache was then served under the fork's install:
+
+- right marketplace name
+- right version number
+- plugin enabled, no error anywhere
+- and the **stock engine** running, with none of the fork's behaviour
+
+Nothing in the repo could detect it, because nothing in the repo was wrong. `npm run check:manifest` enforces the name so an upstream merge cannot quietly restore the collision.
+
+If the fork's version number ever needs to diverge further, a suffix (`1.19.0-pb.1`) would add a second layer — at the cost of breaking the version-lockstep design the release tooling assumes.
+
+### Check what is actually installed
+
+```bash
+npm run doctor
+```
+
+Reports the registered marketplaces, which plugin is enabled, the engine spec in every cached manifest, and whether credentials resolve — and exits non-zero if Claude Code is running anything other than this fork. `npm run plugin:dev:off` runs it automatically, since switching back is when the wrong plugin tends to get left behind.
+
+It flags, among other things:
+
+- upstream's marketplace being registered alongside the fork's (that is how the wrong plugin gets installed)
+- a cached manifest under the fork's marketplace pinning the npm engine (the stale-cache failure above)
+- the fork registered under upstream's old name
+
+To recover from a poisoned cache:
+
+```bash
+claude plugin uninstall cognigy@cognigy-plugin-pb
+rm -rf ~/.claude/plugins/cache/cognigy-plugin-pb
+claude plugin marketplace remove cognigy-plugin-pb
+claude plugin marketplace add pb-crackers/cognigy-plugin
+claude plugin install cognigy@cognigy-plugin-pb
+```
+
+Then `/reload-plugins` in Claude Code.
+
 ### The trap to watch for
 
 If an upstream merge restores the npm pin in any manifest, the plugin silently runs **Cognigy's stock engine** instead of this fork — no error, the error tracing just quietly stops happening. `scripts/check-plugin-manifest.mjs` fails the build if that happens, and it runs in pre-commit and CI. Do not "fix" that failure by relaxing the check.
@@ -113,6 +154,7 @@ See `plugin/skills/flow-nodes/SKILL.md` (the `### code` section) for the full co
 ```bash
 npm install
 npm run plugin:dev      # Claude Code runs this working tree via tsx; /reload-plugins to iterate
+npm run doctor          # confirm the INSTALLED plugin is this fork, not upstream
 npm run plugin:dev:off  # restore the GitHub-installed plugin
 ```
 

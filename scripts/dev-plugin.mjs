@@ -34,7 +34,12 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const devRoot = join(repoRoot, ".dev-plugin");
 const DEV_MARKETPLACE = "cognigy-dev";
-const PROD_MARKETPLACE = "cognigy-plugin";
+// The fork's marketplace name, deliberately NOT upstream's "cognigy-plugin".
+// Claude Code caches plugins at <marketplace>/<plugin>/<version>; when the
+// fork and upstream shared a name AND a version number, the cache key
+// collided and the stock engine was served under the fork's install with no
+// error. See MAINTAINING.md.
+const PROD_MARKETPLACE = "cognigy-plugin-pb";
 // This fork's own repo, NOT Cognigy/cognigy-plugin. Restoring upstream here
 // would reinstall the stock plugin, whose manifests pin the npm engine — the
 // fork's engine would stop running with no error and no visible difference.
@@ -181,6 +186,18 @@ Prod plugin restored (cognigy@${PROD_MARKETPLACE}).
 Next steps in Claude Code:
   1. /plugin configure cognigy@${PROD_MARKETPLACE}   (re-enter credentials if prompted)
   2. /reload-plugins                                 (or restart the session)`);
+
+  // Switching back is exactly when the wrong plugin gets left installed, so
+  // verify rather than assume. Reporting only: the restore itself succeeded.
+  try {
+    execFileSync("node", [join(repoRoot, "scripts", "doctor.mjs")], {
+      stdio: "inherit",
+    });
+  } catch {
+    console.error(
+      "\nThe checks above failed — Claude Code may not be running this fork. See MAINTAINING.md.",
+    );
+  }
 }
 
 const mode = process.argv[2];

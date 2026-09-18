@@ -28,6 +28,7 @@ const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
 // back on a merge, or the plugin would silently run the stock engine and the
 // fork's changes would vanish with no error.
 const ENGINE_SPEC = "github:pb-crackers/cognigy-plugin";
+const FORK_MARKETPLACE_NAME = "cognigy-plugin-pb";
 const expectedArgs = ["-y", "-p", ENGINE_SPEC, "cognigy-mcp"];
 
 function checkPlatformServer(platform, errors) {
@@ -178,7 +179,27 @@ const CHECKS = [
   ["plugin/plugin.json", checkSpecPluginJson],
   ["plugin/mcp.json", checkSpecMcpJson],
   ["plugin/.cursor-plugin/plugin.json", checkCursorPluginJson],
+  [".claude-plugin/marketplace.json", checkMarketplaceJson],
 ];
+
+/**
+ * The fork's marketplace must NOT be named like upstream's.
+ *
+ * Claude Code caches a plugin at <marketplace>/<plugin>/<version>. When the
+ * fork and upstream shared both the marketplace name "cognigy-plugin" and a
+ * version number, the cache key collided: a stale upstream entry was served
+ * under the fork's install, silently running the STOCK engine with the right
+ * marketplace, the right version and no error anywhere. An upstream merge
+ * restoring the shared name would make that possible again.
+ */
+function checkMarketplaceJson(manifest, errors) {
+  if (manifest.name !== FORK_MARKETPLACE_NAME) {
+    errors.push(
+      `marketplace name must be "${FORK_MARKETPLACE_NAME}" (got ${JSON.stringify(manifest.name)}) — ` +
+        "sharing upstream's name lets client plugin caches collide and serve the stock engine",
+    );
+  }
+}
 
 let failed = false;
 for (const [relPath, check] of CHECKS) {
