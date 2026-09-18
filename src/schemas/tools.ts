@@ -353,6 +353,30 @@ export const getResourceSchema = z.object({
 });
 
 // Tool 7: delete_resource
+/**
+ * Flow lifecycle. Deliberately does NOT include delete or list — those already
+ * live in delete_resource and list_resources, and duplicating them would give
+ * the model two ways to do one thing.
+ */
+export const manageFlowsSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("create"),
+    projectId: idSchema,
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).optional(),
+  }),
+  z.object({
+    operation: z.literal("update"),
+    flowId: idSchema,
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(2000).optional(),
+  }),
+  z.object({
+    operation: z.literal("clone"),
+    flowId: idSchema,
+  }),
+]);
+
 export const deleteResourceSchema = z
   .object({
     resourceType: z.enum([

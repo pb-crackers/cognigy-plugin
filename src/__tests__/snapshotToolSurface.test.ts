@@ -68,6 +68,8 @@ describe("backup gate classification", () => {
     manage_voice_gateway: "endpoints are NOT captured in a snapshot",
     manage_snapshots: "the backup tool itself",
     talk_to_agent: "sends a message; changes no configuration",
+    manage_flows:
+      "create and clone are additive; rename is trivially reversible, and deleting a flow still goes through the gated delete_resource",
   };
 
   it("classifies every tool", () => {

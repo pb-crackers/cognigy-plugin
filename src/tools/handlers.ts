@@ -1358,6 +1358,54 @@ export class ToolHandlers {
     return nodeId;
   }
 
+  /**
+   * Find where a new node should go in a flow that has no AI Agent.
+   *
+   * Walks the `next` chain from Start and returns the last node before End, so
+   * nodes appended without an explicit parent build up in the order they were
+   * written rather than stacking in reverse right after Start.
+   *
+   * Also reports whether the flow contains an AI Agent node, because that
+   * changes the answer entirely: agent flows place nodes inside tool branches,
+   * never on the top-level chain.
+   */
+  private async resolveMainChainAnchor(
+    flowId: string,
+  ): Promise<{ nodeId: string | null; hasAiAgent: boolean }> {
+    try {
+      const chart: any = await this.apiClient.get(
+        `/v2.0/flows/${flowId}/chart`,
+      );
+      const nodes: any[] = chart?.nodes ?? [];
+      const relations: any[] = chart?.relations ?? [];
+
+      const hasAiAgent = nodes.some((n: any) => n?.type === "aiAgentJob");
+      if (hasAiAgent) return { nodeId: null, hasAiAgent: true };
+
+      const byId = new Map<string, any>(
+        nodes.map((n: any) => [n?._id ?? n?.id, n]),
+      );
+      const nextOf = new Map<string, string | null>(
+        relations.map((r: any) => [r?.node, r?.next ?? null]),
+      );
+
+      const start = nodes.find((n: any) => n?.type === "start");
+      if (!start) return { nodeId: null, hasAiAgent: false };
+
+      let current: string = start._id ?? start.id;
+      // Bounded by the node count so a malformed cyclic chart cannot hang.
+      for (let i = 0; i <= nodes.length; i++) {
+        const next = nextOf.get(current) ?? null;
+        if (!next) break;
+        if ((byId.get(next)?.type ?? "") === "end") break;
+        current = next;
+      }
+      return { nodeId: current, hasAiAgent: false };
+    } catch {
+      return { nodeId: null, hasAiAgent: false };
+    }
+  }
+
   private async readTask(taskId: string, projectId?: string): Promise<any> {
     return this.apiClient.get(`/new/v2.0/tasks/${taskId}`, {
       ...(projectId ? { params: { projectId } } : {}),
@@ -5264,6 +5312,83 @@ export class ToolHandlers {
   }
 
   // =========================================================================
+  // manage_flows
+  // =========================================================================
+  /**
+   * Flow lifecycle: create, rename, clone.
+   *
+   * Deliberately no delete or list — delete_resource and list_resources
+   * already cover flows, and a second route to the same action just gives the
+   * model a coin to flip.
+   *
+   * Not behind the snapshot backup gate: creating or renaming a flow adds to a
+   * project rather than altering an existing agent, and deleting one still
+   * goes through the gated delete_resource.
+   */
+  async handleManageFlows(args: any): Promise<any> {
+    const data = schemas.manageFlowsSchema.parse(args);
+
+    switch (data.operation) {
+      case "create": {
+        const flow: any = await this.apiClient.post("/v2.0/flows", {
+          projectId: data.projectId,
+          name: data.name,
+          ...(data.description ? { description: data.description } : {}),
+        });
+        const flowId = flow._id || flow.id;
+        return withHints(
+          {
+            flowId,
+            referenceId: flow.referenceId,
+            name: flow.name ?? data.name,
+            projectId: data.projectId,
+          },
+          {
+            action:
+              "The flow contains only its Start and End nodes. Add logic with manage_flow_nodes { operation: 'create', flowId, nodeType, label, config } — parentNodeId can be omitted in a flow with no AI Agent node, and the node is appended to the end of the main chain. Point an executeFlow or goTo node at this flow with its referenceId, not its flowId.",
+          },
+        );
+      }
+
+      case "update": {
+        if (data.name === undefined && data.description === undefined) {
+          return withHints(
+            { error: "Provide name and/or description to update." },
+            { action: "Nothing else on a flow is editable through this tool." },
+          );
+        }
+        await this.apiClient.patch(`/v2.0/flows/${data.flowId}`, {
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.description !== undefined
+            ? { description: data.description }
+            : {}),
+        });
+        return {
+          updated: true,
+          flowId: data.flowId,
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.description !== undefined
+            ? { description: data.description }
+            : {}),
+        };
+      }
+
+      case "clone": {
+        const clone: any = await this.apiClient.post(
+          `/v2.0/flows/${data.flowId}/clone`,
+          {},
+        );
+        return {
+          flowId: clone._id || clone.id,
+          referenceId: clone.referenceId,
+          name: clone.name,
+          clonedFrom: data.flowId,
+        };
+      }
+    }
+  }
+
+  // =========================================================================
   // Tool 12: manage_flow_nodes
   // =========================================================================
   async handleManageFlowNodes(args: any): Promise<any> {
@@ -5378,17 +5503,42 @@ export class ToolHandlers {
           );
         }
 
-        const targetNodeId = data.parentNodeId;
+        let targetNodeId = data.parentNodeId;
         let mode = data.mode ?? "append";
+        let anchoredAutomatically = false;
 
+        // In a flow with no AI Agent — a shared subroutine, an error handler,
+        // a classic Node dialog — there are no tool branches to place nodes
+        // in, and requiring parentNodeId would mean looking up the Start node
+        // by hand before every single call. Anchor to the end of the main
+        // chain instead so a flow can be built one node at a time.
+        //
+        // Only when the flow really has no agent: in an agent flow, appending
+        // at the top level is exactly the mistake that breaks orchestration,
+        // so there the caller is still told to pick a tool branch.
         if (!targetNodeId) {
-          return withHints(
-            { error: "parentNodeId is required for create operation." },
-            {
-              action:
-                "Specify the parentNodeId of a node inside the appropriate tool branch where the new node should be created.",
-            },
-          );
+          const anchor = await this.resolveMainChainAnchor(flowId);
+          if (anchor.hasAiAgent) {
+            return withHints(
+              { error: "parentNodeId is required for create operation." },
+              {
+                action:
+                  "This flow has an AI Agent node, so nodes belong inside a tool branch. Pass the tool node id from create_tool as parentNodeId with mode 'appendChild'. Never add nodes before the AI Agent Job node.",
+              },
+            );
+          }
+          if (!anchor.nodeId) {
+            return withHints(
+              { error: "parentNodeId is required for create operation." },
+              {
+                action:
+                  "Could not locate this flow's Start node to append after. Use manage_flow_nodes { operation: 'list', flowId } and pass an explicit parentNodeId.",
+              },
+            );
+          }
+          targetNodeId = anchor.nodeId;
+          mode = "append";
+          anchoredAutomatically = true;
         }
 
         // Auto-rewrite appendChild → append for node types where appendChild
@@ -5511,6 +5661,7 @@ export class ToolHandlers {
           ...(actualParentId ? { parentId: actualParentId } : {}),
           targetNodeId,
           mode,
+          ...(anchoredAutomatically ? { anchoredAutomatically: true } : {}),
           configApplied: data.config ? Object.keys(data.config) : [],
           // Only when something was actually deleted — a node whose children
           // the server pruned should say which ones.
@@ -7942,6 +8093,9 @@ export class ToolHandlers {
           break;
         case "update_tool":
           result = await this.handleUpdateTool(args);
+          break;
+        case "manage_flows":
+          result = await this.handleManageFlows(args);
           break;
         case "manage_flow_nodes":
           result = await this.handleManageFlowNodes(args);

@@ -1,13 +1,40 @@
 ---
 name: flow-nodes
-description: "Use when adding custom logic inside a Cognigy tool branch with manage_flow_nodes, or when rendering/visualizing a flow as a diagram — supported node types, config schemas, placement rules, the tool-first workflow, and the render operation."
+description: "Use when building or editing a Cognigy Flow with manage_flow_nodes or manage_flows — creating a standalone flow with no AI Agent, adding logic inside an agent's tool branch, node types and config schemas, placement rules, and rendering a flow as a diagram."
 ---
 
 # Flow Node Reference
 
-Use `manage_flow_nodes` to add logic nodes **inside tool branches only**. Nodes are helpers for tools — they must ALWAYS be created under a tool, never as standalone pre-agent nodes.
+## First: which kind of flow is this?
+
+Placement rules are opposite in the two cases, so decide before creating anything.
+
+| | **Agent flow** (contains an `aiAgentJob` node) | **Plain flow** (no agent) |
+| --- | --- | --- |
+| Where nodes go | Inside tool branches, never on the top-level chain | On the top-level chain, Start → … → End |
+| How to place them | `parentNodeId` = the tool node id from `create_tool`, `mode: 'appendChild'` | Omit `parentNodeId` and the node is appended to the end of the chain |
+| Created by | `create_ai_agent` (provisions its own flow) | `manage_flows { operation: 'create' }` |
+
+`manage_flow_nodes` tells the two apart itself: it looks for an `aiAgentJob` node, and in an agent flow it refuses a create with no `parentNodeId` rather than putting a node somewhere harmful.
+
+### Agent flows: nodes live inside tools
+
+Nodes are helpers for tools — in an agent flow they must ALWAYS be created under a tool, never as standalone pre-agent nodes.
 
 **CRITICAL: NEVER add nodes before the AI Agent Job node.** Pre-agent nodes cause conversation loops and break the agent's ability to orchestrate. ALL logic — including authentication, data collection, greetings, and conditional behavior — must be implemented as agent tools.
+
+### Plain flows: a normal Start → End chain
+
+A flow with no AI Agent is an ordinary sequence — a shared subroutine called with `executeFlow`, an error handler, a classic Node-based dialog. None of the tool-branch rules apply: there is no agent to disrupt and no tool to nest under.
+
+```
+1. Create the flow — manage_flows { operation: 'create', projectId, name: 'Order Lookup' } → returns flowId + referenceId
+2. Add nodes in order — manage_flow_nodes { operation: 'create', flowId, nodeType: 'say', label: 'Ask', config: { text: 'What is your order number?' } }
+   ...no parentNodeId needed. Each call appends after the previous node, so nodes run in the order you wrote them.
+3. Call it from elsewhere — an executeFlow node pointed at the flow's referenceId (the UUID, NOT the 24-char flowId)
+```
+
+Pass an explicit `parentNodeId` whenever you need to branch or insert rather than append — for example to put a node inside an `ifThenElse` branch.
 
 **Voice exception — Set Session Config:** The one node that _should_ run before the AI Agent node is a `setSessionConfig` (Set Session Config) node, and only in **voice** flows. It applies per-session speech settings (barge-in, ASR, STT/TTS, input timeouts) and must be the **first** node. The `audit_voice_agent` tool checks for this and can create it by `prepend`ing before the AI Agent node. Do not add any other pre-agent nodes.
 
@@ -27,9 +54,8 @@ Use `manage_flow_nodes` to add logic nodes **inside tool branches only**. Nodes 
 
 ## Placement
 
-Nodes MUST be placed inside tool branches using `parentNodeId` and `mode`.
-
-- **Inside a tool (primary use case)**: Set `parentNodeId` to the tool node ID (from `create_tool`) and `mode` to `appendChild`. The handler automatically places the node in the correct execution chain (before the Resolve Tool Action node). Both `appendChild` and `append` work correctly when targeting a tool node.
+- **Inside a tool (agent flows)**: Set `parentNodeId` to the tool node ID (from `create_tool`) and `mode` to `appendChild`. The handler automatically places the node in the correct execution chain (before the Resolve Tool Action node). Both `appendChild` and `append` work correctly when targeting a tool node.
+- **On the main chain (plain flows only)**: Omit `parentNodeId`. The node is appended after the last node before `End`, so repeated calls build the flow in order. The response reports `anchoredAutomatically: true`. This is refused in a flow that has an AI Agent node.
 - **After a sibling**: Set `parentNodeId` to an existing node within the branch and `mode` to `append` to place after it.
 
 ## Supported Node Types

@@ -139,11 +139,42 @@ describe("cognigyScriptHints", () => {
     expect(hints.action).toContain("$cs");
   });
 
-  it("leads with the string-typing problem when there are only warnings", () => {
+  it("summarises inline warnings rather than listing every one", () => {
+    // A body of genuinely string fields is correct; one line per field on
+    // every write is noise that trains the reader to ignore the hint.
+    const hints = cognigyScriptHints(
+      reviewCognigyScriptPayload({
+        a: "{{context.a}}",
+        b: "{{context.b}}",
+        c: "{{context.c}}",
+        d: "{{context.d}}",
+        e: "{{context.e}}",
+      }),
+    )!;
+    expect(hints.warning).toContain("5 values");
+    expect(hints.warning).toContain("+2 more");
+    expect(hints.warning).toContain("correct for a string field");
+    expect(hints.action).toContain("docs.cognigy.com");
+  });
+
+  it("does not fold a type warning into the inline-expression count", () => {
+    // An undocumented $cs type is not an inline expression; lumping it into
+    // "N values use inline {{ }}" would name a path that does no such thing.
+    const hints = cognigyScriptHints(
+      reviewCognigyScriptPayload({
+        a: "{{context.a}}",
+        typed: { $cs: { script: "context.x", type: "integer" } },
+      }),
+    )!;
+    expect(hints.warning).toContain("1 value (a)");
+    expect(hints.warning).toContain('typed: $cs "type" is "integer"');
+  });
+
+  it("names a single inline warning without a remainder", () => {
     const hints = cognigyScriptHints(
       reviewCognigyScriptPayload({ a: "{{context.a}}" }),
     )!;
-    expect(hints.warning).toContain("as a string");
-    expect(hints.action).toContain("docs.cognigy.com");
+    expect(hints.warning).toContain("1 value (a)");
+    expect(hints.warning).not.toContain("more");
   });
 });

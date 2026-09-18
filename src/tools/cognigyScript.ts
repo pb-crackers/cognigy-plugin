@@ -38,6 +38,11 @@ export interface CognigyScriptFinding {
   /** Dotted path to the offending value, e.g. `order.items[0].qty`. */
   path: string;
   message: string;
+  /**
+   * `inline` — a whole value written as `{{ ... }}`. Common, often fine, and
+   * summarised in bulk. Anything else is reported on its own line.
+   */
+  kind?: "inline";
 }
 
 export interface CognigyScriptReview {
@@ -150,6 +155,7 @@ export function reviewCognigyScriptPayload(
 
     if (typeof node === "string" && WHOLE_INLINE_EXPRESSION.test(node)) {
       warnings.push({
+        kind: "inline",
         path: path || "(root)",
         message: `"${node.trim()}" interpolates to a STRING. If this field needs a number, boolean, array or object, use { "$cs": { "script": "${node
           .trim()
@@ -182,24 +188,53 @@ export function reviewHttpBody(body: unknown): CognigyScriptReview {
   return reviewCognigyScriptPayload(parsed);
 }
 
-/** Render a review as the `_hints` warning/action pair, or null when clean. */
+/** How many inline-expression paths to name before summarising the rest. */
+const MAX_LISTED_WARNINGS = 3;
+
+/**
+ * Render a review as the `_hints` warning/action pair, or null when clean.
+ *
+ * Errors are listed individually — each one is a wrapper that will not work.
+ * Inline-expression warnings are summarised instead: a body of genuinely
+ * string fields is perfectly correct, and emitting one line per field on every
+ * write would be noise that teaches the reader to skip the hint entirely.
+ */
 export function cognigyScriptHints(
   review: CognigyScriptReview,
 ): { warning: string; action: string } | null {
   const { errors, warnings } = review;
   if (errors.length === 0 && warnings.length === 0) return null;
 
-  const lines: string[] = [];
-  for (const e of errors) lines.push(`${e.path}: ${e.message}`);
-  for (const w of warnings) lines.push(`${w.path}: ${w.message}`);
+  const parts: string[] = [];
+
+  if (errors.length > 0) {
+    parts.push(
+      `The request body misuses CognigyScript. ` +
+        errors.map((e) => `${e.path}: ${e.message}`).join(" | "),
+    );
+  }
+
+  // Anything that is not a bulk inline warning is specific enough to name.
+  const other = warnings.filter((w) => w.kind !== "inline");
+  if (other.length > 0) {
+    parts.push(other.map((w) => `${w.path}: ${w.message}`).join(" | "));
+  }
+
+  const inline = warnings.filter((w) => w.kind === "inline");
+  if (inline.length > 0) {
+    const listed = inline.slice(0, MAX_LISTED_WARNINGS);
+    const rest = inline.length - listed.length;
+    const names = listed.map((w) => w.path).join(", ");
+    parts.push(
+      `${inline.length} value${inline.length === 1 ? "" : "s"} (${names}${
+        rest > 0 ? `, +${rest} more` : ""
+      }) use inline {{ }} and will be sent as STRINGS. That is correct for a string field — switch any that need a number, boolean, array or object to the $cs form.`,
+    );
+  }
 
   return {
-    warning:
-      (errors.length > 0
-        ? `The request body misuses CognigyScript. `
-        : `The request body sends every CognigyScript value as a string. `) +
-      lines.join(" | "),
+    warning: parts.join(" "),
     action:
-      'Inline {{ }} always yields a string. For a number, boolean, array or object field use { "$cs": { "script": "<bare expression>", "type": "<type>" } }. See https://docs.cognigy.com/ai/platform-features/cognigyscript',
+      'Typed form: { "$cs": { "script": "<bare expression, no braces>", "type": "number" } }. See https://docs.cognigy.com/ai/platform-features/cognigyscript',
   };
 }

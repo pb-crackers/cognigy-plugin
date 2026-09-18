@@ -902,6 +902,56 @@ ADDRESSING: Pass aiAgentId for normal agents. Pass flowId only for LLM Prompt fl
     },
   },
 
+  {
+    name: "manage_flows",
+    description:
+      "Create, rename and clone Flows. Use this to build a Flow that is NOT an AI Agent — a shared subroutine, an error handler, a classic Node-based dialog — or to add a second Flow to a project that already has an agent.\n\n" +
+      "create_ai_agent already provisions its own Flow, so do NOT call this first when building an agent.\n\n" +
+      "OPERATIONS:\n" +
+      "- create: a new empty Flow in a project. Requires projectId and name. Returns the flow id and referenceId. The Flow starts with just its Start and End nodes; add logic with manage_flow_nodes, which can append without a parentNodeId in a Flow that has no AI Agent node.\n" +
+      "- update: rename a Flow or change its description. Requires flowId plus name and/or description.\n" +
+      "- clone: copy an existing Flow, with its nodes, inside the same project. Requires flowId.\n\n" +
+      "To LIST flows use list_resources { resourceType: 'flow', projectId }. To DELETE one use delete_resource { resourceType: 'flow', id } — they are not duplicated here.\n\n" +
+      "A Flow's referenceId (a UUID, not the 24-char hex id) is what other nodes point at: pass it as flowId to an executeFlow or goTo node.",
+    annotations: {
+      title: "Manage Flows",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: {
+          type: "string",
+          enum: ["create", "update", "clone"],
+          description: "Which operation to perform",
+        },
+        projectId: {
+          type: "string",
+          description: "24-char hex project ID (required for create)",
+        },
+        flowId: {
+          type: "string",
+          description:
+            "24-char hex flow ID (required for update and clone). This is the id, not the referenceId UUID.",
+        },
+        name: {
+          type: "string",
+          description:
+            "Flow name (required for create, optional for update). Shown in the Cognigy UI and used to find the flow later.",
+        },
+        description: {
+          type: "string",
+          description:
+            "What the flow is for (optional). Worth setting on shared flows so the next person knows when it runs.",
+        },
+      },
+      required: ["operation"],
+    },
+  },
+
   // 12. manage_flow_nodes
   {
     name: "manage_flow_nodes",
