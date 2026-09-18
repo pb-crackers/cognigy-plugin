@@ -19,7 +19,7 @@
  *
  * Run: npm run doctor
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,23 @@ const pluginsDir = join(claudeDir, "plugins");
 const problems = [];
 const notes = [];
 const ok = [];
+
+/** Sensitive userConfig lives in the OS keychain, not in settings.json. */
+function readPluginSecrets() {
+  if (process.platform !== "darwin") return {};
+  try {
+    const raw = execFileSync(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    return (
+      JSON.parse(raw)?.pluginSecrets?.[`cognigy@${FORK_MARKETPLACE}`] ?? {}
+    );
+  } catch {
+    return {};
+  }
+}
 
 const readJson = (path) => {
   try {
@@ -137,7 +154,44 @@ if (checkedManifests === 0) {
   notes.push("No cached plugin manifests found — nothing is installed yet.");
 }
 
-// --- 4. Credentials -------------------------------------------------------
+// --- 4. Required userConfig, as the CLIENT sees it ------------------------
+//
+// The manifest's env block expands ${user_config.*}, and both options are
+// declared required. Claude Code will not start a server whose required
+// userConfig is unset — so the engine can be perfectly healthy while the
+// client never launches it. The boot check below cannot see this, because it
+// supplies the environment itself; only the stored config tells you whether
+// the CLIENT can start the server.
+const cachedManifestPath = (() => {
+  const base = join(cacheRoot, FORK_MARKETPLACE, "cognigy");
+  for (const version of safeReaddir(base)) {
+    const candidate = join(base, version, ".claude-plugin", "plugin.json");
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+})();
+
+const cachedManifest = cachedManifestPath ? readJson(cachedManifestPath) : null;
+const requiredOptions = Object.entries(cachedManifest?.userConfig ?? {})
+  .filter(([, spec]) => spec?.required)
+  .map(([key]) => key);
+
+if (requiredOptions.length > 0) {
+  const stored = settings.pluginConfigs?.[forkPluginId]?.options ?? {};
+  const secrets = readPluginSecrets();
+  const missing = requiredOptions.filter(
+    (key) => stored[key] === undefined && secrets[key] === undefined,
+  );
+  if (missing.length > 0) {
+    problems.push(
+      `Required plugin config not set: ${missing.join(", ")}. Claude Code will not start the server without it, however healthy the engine is. Fix with /plugin configure ${forkPluginId}.`,
+    );
+  } else {
+    ok.push(`required plugin config set (${requiredOptions.join(", ")})`);
+  }
+}
+
+// --- 5. Credentials -------------------------------------------------------
 const credsFile = join(homedir(), ".cognigy-plugin", "config.json");
 const creds = readJson(credsFile);
 const hasEnv = process.env.COGNIGY_API_KEY && process.env.COGNIGY_API_BASE_URL;
@@ -162,7 +216,7 @@ function safeReaddir(path) {
   }
 }
 
-// --- 5. Does the engine actually start? ----------------------------------
+// --- 6. Does the engine actually start? ----------------------------------
 //
 // Every check above can pass while the server does not run at all: a nested
 // npx in an install-time script once deadlocked the build, so the bin was

@@ -64,6 +64,13 @@ Reports the registered marketplaces, which plugin is enabled, the engine spec in
 
 It flags, among other things:
 
+- **required plugin config not set** — the manifest's env block expands
+  `${user_config.*}` and both options are declared required, so Claude Code
+  refuses to start the server without them. The engine can be entirely healthy
+  and the client still never launches it. This is what "2 userConfig options
+  not yet set" after `claude plugin install` means; it is not a warning you can
+  skip.
+
 - upstream's marketplace being registered alongside the fork's (that is how the wrong plugin gets installed)
 - a cached manifest under the fork's marketplace pinning the npm engine (the stale-cache failure above)
 - the fork registered under upstream's old name
