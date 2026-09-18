@@ -127,6 +127,20 @@ The HTTP Request node writes the response into the `input` object. Two things ab
 
 If you are unsure of the exact shape in your Cognigy version, instrument the post-process on the very first run (`input.debug = { keys: Object.keys(input.httprequest), sample: input.httprequest };`) instead of guessing — a wrong key returns `undefined`, the Resolve Tool Action serializes that, and the LLM honestly reports "no results found" even when the API call succeeded.
 
+#### CognigyScript in the JSON body — `{{ }}` sends a string
+
+`"orderId": "{{context.order.id}}"` sends the string `"42"`, not the number
+`42`. For any non-string field use the `$cs` form instead:
+
+```json
+{ "orderId": { "$cs": { "script": "context.order.id", "type": "number" } } }
+```
+
+The `script` is a **bare** expression with no `{{ }}` around it, `type` is
+optional (`string`, `number`, `boolean`, `object`, `array`), and `$cs` must be
+the only key on its object. The plugin flags misuse in `_hints` on write. Full
+rules are in the flow-nodes guide under `httpRequest`.
+
 #### Code node rules
 
 Both `preProcessCode` and `postProcessCode` run inside Cognigy Code nodes. Two rules apply:

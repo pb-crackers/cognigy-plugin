@@ -27,6 +27,11 @@ import {
 import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { normalizeToolParameters } from "./toolParameters.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
+import {
+  cognigyScriptHints,
+  reviewCognigyScriptPayload,
+  reviewHttpBody,
+} from "./cognigyScript.js";
 import { codeNodeWarnings } from "./codeNodeHints.js";
 import {
   ERROR_GUARD_CONDITION,
@@ -601,6 +606,24 @@ const RESOLVE_NODE_MAP: Record<string, { type: string; label: string } | null> =
  * the Cognigy httpRequest node descriptor field names (type, payloadType/
  * payloadJSON/payloadText, headers-as-JSON-string).
  */
+/**
+ * Attach CognigyScript findings for an HTTP payload to a tool result.
+ *
+ * Advisory only — a body that misuses `{{ }}` still creates a working node, it
+ * just sends the wrong types, so this must never turn into a hard failure.
+ */
+function withCognigyScriptHints<T extends Record<string, any>>(
+  result: T,
+  payload: { body?: unknown; payloadJSON?: unknown },
+): T {
+  const review =
+    payload.payloadJSON !== undefined
+      ? reviewCognigyScriptPayload(payload.payloadJSON)
+      : reviewHttpBody(payload.body);
+  const hints = cognigyScriptHints(review);
+  return hints ? withHints(result, hints) : result;
+}
+
 function buildHttpNodeConfig(http: {
   url?: string;
   method?: string;
@@ -4838,9 +4861,13 @@ export class ToolHandlers {
       for (const code of [cfg.preProcessCode, cfg.postProcessCode]) {
         if (code) parameterWarnings.push(...codeNodeWarnings(code));
       }
-      return parameterWarnings.length > 0
-        ? withHints(createdHttp, { warning: parameterWarnings.join(" ") })
-        : createdHttp;
+      const httpResult =
+        parameterWarnings.length > 0
+          ? withHints(createdHttp, { warning: parameterWarnings.join(" ") })
+          : createdHttp;
+      // Inline {{ }} in a JSON body always sends a string; flag it so a
+      // number/boolean/object field is not silently sent as text.
+      return withCognigyScriptHints(httpResult, { body: cfg.body });
     } catch (error: any) {
       const rolledBack: string[] = [];
       const rollbackFailed: string[] = [];
@@ -5227,9 +5254,13 @@ export class ToolHandlers {
       });
     }
 
-    return parameterWarnings.length > 0
-      ? withHints(response, { warning: parameterWarnings.join(" ") })
-      : response;
+    const updateResult =
+      parameterWarnings.length > 0
+        ? withHints(response, { warning: parameterWarnings.join(" ") })
+        : response;
+    return updatedFields.includes("http")
+      ? withCognigyScriptHints(updateResult, { body: cfg?.body })
+      : updateResult;
   }
 
   // =========================================================================
@@ -5548,6 +5579,18 @@ export class ToolHandlers {
           );
         }
 
+        // An httpRequest node written directly (not via create_tool) gets the
+        // same payload review.
+        if (entry.type === "httpRequest") {
+          const reviewed = withCognigyScriptHints(result, {
+            payloadJSON: data.config?.payloadJSON,
+            body: data.config?.payloadText,
+          });
+          if (reviewed !== result) {
+            return withRenderSuggestion(reviewed, flowId, nodeId);
+          }
+        }
+
         if (missingInitAppSession) {
           return withRenderSuggestion(
             withHints(result, {
@@ -5695,12 +5738,19 @@ export class ToolHandlers {
           patchPayload,
         );
 
-        const result = {
+        let result: Record<string, any> = {
           updated: true,
           nodeId: data.nodeId,
           ...(data.label ? { label: data.label } : {}),
           ...(data.config ? { configUpdated: Object.keys(data.config) } : {}),
         };
+
+        if (nodeType === "httpRequest") {
+          result = withCognigyScriptHints(result, {
+            payloadJSON: data.config?.payloadJSON,
+            body: data.config?.payloadText,
+          });
+        }
 
         // Hints about runtime APIs the code uses but the Code Node runtime
         // does not have; the node was updated regardless.

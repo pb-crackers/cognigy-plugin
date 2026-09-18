@@ -735,7 +735,7 @@ ADDRESSING: Pass aiAgentId for normal agents. Pass flowId only for LLM Prompt fl
             body: {
               type: "string",
               description:
-                "Request body template. Use CognigyScript tokens like {{input.aiAgent.toolArgs.param}} for dynamic values (http only).",
+                'Request body template (http only). For a JSON body, CognigyScript comes in two forms and they are NOT interchangeable: inline {{input.aiAgent.toolArgs.x}} always sends a STRING, so for a number, boolean, array or object field use { "$cs": { "script": "<bare expression>", "type": "number" } } instead — the script inside $cs has no {{ }} around it, type is optional, and $cs must be the only key on its object. Example: {"name": "{{input.aiAgent.toolArgs.name}}", "qty": { "$cs": { "script": "input.aiAgent.toolArgs.qty", "type": "number" } }}',
             },
             preProcessCode: {
               type: "string",

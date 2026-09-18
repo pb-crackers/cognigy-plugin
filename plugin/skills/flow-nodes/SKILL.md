@@ -430,6 +430,51 @@ Call an external API.
 }
 ```
 
+
+#### CognigyScript in a JSON body — `{{ }}` vs `$cs`
+
+There are two syntaxes and they are **not** interchangeable.
+
+**Inline `{{ }}` always produces a string.** Correct for a string field, and
+silently wrong for anything else — an API expecting `42` receives `"42"`, one
+expecting an object receives `"[object Object]"`. The request usually still
+sends; the types are just wrong.
+
+```json
+{ "customerName": "{{context.user.name}}" }
+```
+
+**`$cs` runs the script and converts the result**, so it is the only correct
+form for a number, boolean, array or object field:
+
+```json
+{
+  "customerName": { "$cs": { "script": "context.user.name" } },
+  "orderId": { "$cs": { "script": "context.currentOrder.id", "type": "number" } }
+}
+```
+
+Rules for the wrapper:
+
+| | |
+| --- | --- |
+| `script` | Required. A **bare** expression — `context.user.name`, NOT `{{context.user.name}}`. The value inside `$cs` is already evaluated as CognigyScript. |
+| `type` | Optional. `string`, `number`, `boolean`, `object`, `array`. Omit it to pass the value through unconverted. |
+| Placement | `$cs` must be the ONLY key on its object. `{ "$cs": {...}, "fallback": 1 }` is invalid. |
+
+If the referenced value does not exist, the key is skipped rather than sent as
+null.
+
+Interpolating into a sentence is a genuine string and needs no `$cs`:
+`"greeting": "Hello {{context.user.name}}, welcome back"`.
+
+The plugin reviews JSON bodies on write and returns a `_hints` warning naming
+the exact path when a `$cs` wrapper is malformed, or when a whole value is a
+bare `{{ }}` expression that may need a type. The node is still created — the
+hint is advisory.
+
+Reference: <https://docs.cognigy.com/ai/platform-features/cognigyscript>
+
 ---
 
 ### llmPrompt — LLM Prompt
