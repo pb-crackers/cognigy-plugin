@@ -17,7 +17,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && npx tsc && node scripts/copy-assets.mjs",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc && node scripts/copy-assets.mjs",
     "dev": "tsx watch src/index.ts",
     "plugin:dev": "node scripts/dev-plugin.mjs on",
     "plugin:dev:off": "node scripts/dev-plugin.mjs off",

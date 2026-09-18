@@ -27,9 +27,15 @@ const run = (command, args) =>
   });
 
 // 1. Husky — only meaningful in a real working copy with hooks to install.
-if (existsSync(join(repoRoot, ".git"))) {
+//
+// Invoked through its installed binary, never `npx husky`. A nested npx
+// inside an npx install deadlocks: `npx -p github:… cognigy-mcp` runs this
+// hook, and the inner `npm exec` hangs indefinitely at 0% CPU, so the MCP
+// server never starts and the client just sees a dead connection.
+const huskyBin = join(repoRoot, "node_modules", ".bin", "husky");
+if (existsSync(join(repoRoot, ".git")) && existsSync(huskyBin)) {
   try {
-    run("npx", ["husky"]);
+    run(huskyBin, []);
   } catch {
     // A working copy without husky available is fine; hooks are a dev nicety,
     // never a reason to fail an install.
