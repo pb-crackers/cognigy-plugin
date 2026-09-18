@@ -29,6 +29,10 @@ const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
 // fork's changes would vanish with no error.
 const ENGINE_SPEC = "github:pb-crackers/cognigy-plugin";
 const FORK_MARKETPLACE_NAME = "cognigy-plugin-pb";
+// The fork's version is always <upstream base>-pb.<n>. Sharing upstream's
+// exact version number is half of what let a client cache serve the stock
+// engine under this fork's install; the marketplace name is the other half.
+const FORK_VERSION_RE = /^\d+\.\d+\.\d+-pb\.\d+$/;
 const expectedArgs = ["-y", "-p", ENGINE_SPEC, "cognigy-mcp"];
 
 function checkPlatformServer(platform, errors) {
@@ -199,6 +203,14 @@ function checkMarketplaceJson(manifest, errors) {
         "sharing upstream's name lets client plugin caches collide and serve the stock engine",
     );
   }
+}
+
+if (!FORK_VERSION_RE.test(pkg.version)) {
+  console.error(
+    `✗ package.json version "${pkg.version}" is not a fork version (expected <base>-pb.<n>).\n` +
+      "  An upstream merge takes their number; re-stamp it with: node scripts/fork-version.mjs <upstream version>",
+  );
+  process.exit(1);
 }
 
 let failed = false;

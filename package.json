@@ -1,6 +1,6 @@
 {
   "name": "@cognigy/plugin-engine",
-  "version": "1.19.0",
+  "version": "1.19.0-pb.1",
   "description": "MCP server engine for the NiCE Cognigy Plugin (Claude Code, Codex, and more)",
   "main": "dist/index.js",
   "type": "module",
@@ -23,6 +23,7 @@
     "plugin:dev:off": "node scripts/dev-plugin.mjs off",
     "check:manifest": "node scripts/check-plugin-manifest.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "version:fork": "node scripts/fork-version.mjs",
     "start": "node dist/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "prettier:check": "prettier --check",
