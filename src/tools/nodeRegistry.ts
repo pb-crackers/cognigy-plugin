@@ -135,6 +135,28 @@ export const NODE_REGISTRY: Record<string, NodeRegistryEntry> = {
     requiredConfigKeys: [],
   },
 
+  log: {
+    type: "log",
+    extension: "@cognigy/basic-nodes",
+    category: "data",
+    summary:
+      "Write a message to the project logs (Test > Logs). Retained 24h; 'debug' entries are hidden in the log list until the Debug filter is switched on",
+    placement: "flow",
+    configKeys: ["message", "level"],
+    requiredConfigKeys: ["message"],
+  },
+
+  debugMessage: {
+    type: "debugMessage",
+    extension: "@cognigy/basic-nodes",
+    category: "data",
+    summary:
+      "Write a message to the Interaction Panel's debug view only — not to the project logs. Use for authoring-time inspection",
+    placement: "flow",
+    configKeys: ["message", "header", "level"],
+    requiredConfigKeys: ["message"],
+  },
+
   goTo: {
     type: "goTo",
     extension: "@cognigy/basic-nodes",

@@ -28,6 +28,10 @@ import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { normalizeToolParameters } from "./toolParameters.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
 import {
+  buildToolCallLogConfig,
+  buildToolCallLogLabel,
+} from "./toolCallLog.js";
+import {
   cognigyScriptHints,
   reviewCognigyScriptPayload,
   reviewHttpBody,
@@ -622,6 +626,39 @@ function withCognigyScriptHints<T extends Record<string, any>>(
       : reviewHttpBody(payload.body);
   const hints = cognigyScriptHints(review);
   return hints ? withHints(result, hints) : result;
+}
+
+/**
+ * Create the tool-call Log node at the HEAD of a tool branch.
+ *
+ * Returns the new node id so the next node in the chain can target it.
+ * Appending both this and the following node to the tool node would leave
+ * their order ambiguous, exactly as it did with the error guards.
+ *
+ * Never fails the tool build: a missing log line is not worth losing a tool.
+ */
+async function createToolCallLogNode(
+  apiClient: CognigyApiClient,
+  flowId: string,
+  toolNodeId: string,
+  toolId: string,
+): Promise<string | undefined> {
+  try {
+    const node: any = await apiClient.post(
+      `/v2.0/flows/${flowId}/chart/nodes`,
+      {
+        type: "log",
+        extension: "@cognigy/basic-nodes",
+        mode: "append",
+        target: toolNodeId,
+        label: buildToolCallLogLabel(toolId),
+        config: buildToolCallLogConfig(toolId),
+      },
+    );
+    return node._id || node.id;
+  } catch {
+    return undefined;
+  }
 }
 
 function buildHttpNodeConfig(http: {
@@ -4692,6 +4729,19 @@ export class ToolHandlers {
         const toolNodeId = createdNode._id || createdNode.id;
         createdNodeIds.push(toolNodeId);
 
+        // First node in the branch, so a call that later throws or hangs has
+        // still been recorded.
+        const logNodeId =
+          cfg.logToolCalls === false
+            ? undefined
+            : await createToolCallLogNode(
+                this.apiClient,
+                flowId,
+                toolNodeId,
+                cfg.toolId ?? data.name,
+              );
+        if (logNodeId) createdNodeIds.push(logNodeId);
+
         const resolveSpec = RESOLVE_NODE_MAP[data.toolType];
         let resolveNodeId: string | undefined;
         if (resolveSpec) {
@@ -4710,7 +4760,7 @@ export class ToolHandlers {
               type: resolveSpec.type,
               extension: "@cognigy/basic-nodes",
               mode: "append",
-              target: toolNodeId,
+              target: logNodeId ?? toolNodeId,
               label: resolveLabel,
               config: resolveConfig,
             },
@@ -4723,6 +4773,7 @@ export class ToolHandlers {
           toolId: toolNodeId,
           name: data.name,
           toolType: data.toolType,
+          ...(logNodeId ? { toolCallLogNodeId: logNodeId } : {}),
           // Which parent the tool actually landed under — a flow can hold
           // more than one, so the caller must be able to see the choice.
           parentNodeId: jobNodeId,
@@ -4800,6 +4851,19 @@ export class ToolHandlers {
       const resolveNodeId = resolveNode._id || resolveNode.id;
       createdNodeIds.push(resolveNodeId);
 
+      // Head of the branch, before pre-process and the request itself, so a
+      // call that fails anywhere downstream has still been logged.
+      const httpLogNodeId =
+        cfg.logToolCalls === false
+          ? undefined
+          : await createToolCallLogNode(
+              this.apiClient,
+              flowId,
+              toolNodeId,
+              cfg.toolId ?? data.name,
+            );
+      if (httpLogNodeId) createdNodeIds.push(httpLogNodeId);
+
       // 3. Create optional pre-process Code node
       let preProcessNodeId: string | undefined;
       // Each code node in the chain gets a guard, and the NEXT node targets
@@ -4809,7 +4873,7 @@ export class ToolHandlers {
       if (cfg.preProcessCode) {
         preProcessNodeId = await this.createWrappedCodeNode({
           flowId,
-          target: toolNodeId,
+          target: httpLogNodeId ?? toolNodeId,
           label: `${toolLabel} - Pre-Process`,
           code: cfg.preProcessCode,
         });
@@ -4845,7 +4909,11 @@ export class ToolHandlers {
           type: "httpRequest",
           extension: "@cognigy/basic-nodes",
           mode: "append",
-          target: preGuard?.guardNodeId ?? preProcessNodeId ?? toolNodeId,
+          target:
+            preGuard?.guardNodeId ??
+            preProcessNodeId ??
+            httpLogNodeId ??
+            toolNodeId,
           label: `${toolLabel} - HTTP Request`,
           config: httpConfig,
         },
@@ -4892,6 +4960,7 @@ export class ToolHandlers {
         parentNodeId: jobNodeId,
         parentNodeType: jobNode.type,
         childNodes: {
+          ...(httpLogNodeId ? { toolCallLogNodeId: httpLogNodeId } : {}),
           ...(preProcessNodeId ? { preProcessNodeId } : {}),
           ...(preGuard?.guardNodeId
             ? { preProcessGuardNodeId: preGuard.guardNodeId }

@@ -2322,9 +2322,13 @@ describe("ToolHandlers v2", () => {
 
     it("reports the parent node the tool was attached to", async () => {
       mockFlowWithJobNode();
-      api.post
-        .mockResolvedValueOnce({ _id: ID.tool })
-        .mockResolvedValueOnce({ _id: "60d5ec49f1a2c8b1a4e0f0ac" });
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ac" } as any;
+        if (body?.type === "log")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ad" } as any;
+        return { _id: ID.tool } as any;
+      });
 
       const result = await h.handleToolCall("create_tool", {
         aiAgentId: ID.agent,
@@ -2345,9 +2349,13 @@ describe("ToolHandlers v2", () => {
           { _id: ID.node, type: "aiAgentJob" },
         ],
       });
-      api.post
-        .mockResolvedValueOnce({ _id: ID.tool })
-        .mockResolvedValueOnce({ _id: "60d5ec49f1a2c8b1a4e0f0ac" });
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ac" } as any;
+        if (body?.type === "log")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ad" } as any;
+        return { _id: ID.tool } as any;
+      });
 
       const result = await h.handleToolCall("create_tool", {
         aiAgentId: ID.agent,
@@ -2428,9 +2436,15 @@ describe("ToolHandlers v2", () => {
       mockFlowWithJobNode();
       const toolNodeId = "aaaaaaaaaaaaaaaaaaaaa001";
       const resolveNodeId = "aaaaaaaaaaaaaaaaaaaaa002";
-      api.post
-        .mockResolvedValueOnce({ _id: toolNodeId })
-        .mockResolvedValueOnce({ _id: resolveNodeId });
+      // Resolve by node type: the branch now also gets a tool-call Log node,
+      // and a positional mock hands its id to the wrong node.
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: resolveNodeId } as any;
+        if (body?.type === "log")
+          return { _id: "aaaaaaaaaaaaaaaaaaaaa00a" } as any;
+        return { _id: toolNodeId } as any;
+      });
 
       const result = await h.handleToolCall("create_tool", baseArgs);
 
@@ -2449,9 +2463,15 @@ describe("ToolHandlers v2", () => {
       mockFlowWithJobNode();
       const toolNodeId = "aaaaaaaaaaaaaaaaaaaaa001";
       const resolveNodeId = "aaaaaaaaaaaaaaaaaaaaa002";
-      api.post
-        .mockResolvedValueOnce({ _id: toolNodeId })
-        .mockResolvedValueOnce({ _id: resolveNodeId });
+      // Resolve by node type: the branch now also gets a tool-call Log node,
+      // and a positional mock hands its id to the wrong node.
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: resolveNodeId } as any;
+        if (body?.type === "log")
+          return { _id: "aaaaaaaaaaaaaaaaaaaaa00a" } as any;
+        return { _id: toolNodeId } as any;
+      });
 
       await h.handleToolCall("create_tool", {
         aiAgentId: ID.agent,

@@ -448,6 +448,8 @@ export const createToolSchema = z
       toolResponseValue: z.string().optional(),
       // http tools: set false to skip the generated failure guards
       errorGuard: z.boolean().optional(),
+      // set false to skip the generated tool-call Log node
+      logToolCalls: z.boolean().optional(),
     }),
   })
   .refine((d) => d.aiAgentId || d.flowId, {
@@ -488,6 +490,7 @@ export const updateToolSchema = z
         postProcessCode: z.string().optional(),
         toolResponseValue: z.string().optional(),
         errorGuard: z.boolean().optional(),
+        logToolCalls: z.boolean().optional(),
         httpNodeId: idSchema.optional(),
         preProcessNodeId: idSchema.optional(),
         postProcessNodeId: idSchema.optional(),

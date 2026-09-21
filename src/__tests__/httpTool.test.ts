@@ -29,6 +29,7 @@ const MOCK_IDS = {
   preNode: "aaaaaaaaaaaaaaaaaaaaa003",
   httpNode: "aaaaaaaaaaaaaaaaaaaaa004",
   postNode: "aaaaaaaaaaaaaaaaaaaaa005",
+  toolCallLog: "aaaaaaaaaaaaaaaaaaaaa00a",
   preGuard: "aaaaaaaaaaaaaaaaaaaaa006",
   responseGuard: "aaaaaaaaaaaaaaaaaaaaa007",
   handler: "aaaaaaaaaaaaaaaaaaaaa008",
@@ -81,6 +82,7 @@ describe("create_tool – HTTP tool path", () => {
       if (type === "aiAgentToolAnswer")
         return { _id: MOCK_IDS.resolveNode } as any;
       if (type === "httpRequest") return { _id: MOCK_IDS.httpNode } as any;
+      if (type === "log") return { _id: MOCK_IDS.toolCallLog } as any;
       if (type === "if") {
         guardCount += 1;
         return {
@@ -130,6 +132,13 @@ describe("create_tool – HTTP tool path", () => {
     expect(result._hints?.warning).toContain("fetch()/XMLHttpRequest");
   });
 
+  /** Find a created node's POST body by node type, not by call order. */
+  function postBody(pred: (body: any) => boolean) {
+    const call = api.post.mock.calls.find(([, body]: any) => pred(body));
+    if (!call) throw new Error("no matching api.post call");
+    return call[1] as any;
+  }
+
   it("creates HTTP tool with basic GET request (url only)", async () => {
     mockFlowWithJobNode();
     mockPostSequence(
@@ -147,7 +156,7 @@ describe("create_tool – HTTP tool path", () => {
     expect(result.childNodes.preProcessNodeId).toBeUndefined();
     expect(result.childNodes.postProcessNodeId).toBeUndefined();
 
-    const httpCallBody = api.post.mock.calls[2][1];
+    const httpCallBody = postBody((b) => b?.type === "httpRequest");
     expect(httpCallBody.config.url).toBe("https://api.example.com/data");
     expect(httpCallBody.config.type).toBe("GET");
   });
@@ -173,7 +182,7 @@ describe("create_tool – HTTP tool path", () => {
     );
 
     expect(result.toolType).toBe("http");
-    const httpCallBody = api.post.mock.calls[2][1];
+    const httpCallBody = postBody((b) => b?.type === "httpRequest");
     expect(httpCallBody.config.type).toBe("POST");
     expect(httpCallBody.config.url).toBe("https://api.example.com/data");
     expect(JSON.parse(httpCallBody.config.headers)).toEqual({
@@ -201,7 +210,7 @@ describe("create_tool – HTTP tool path", () => {
     );
 
     expect(result.toolType).toBe("http");
-    const httpCallBody = api.post.mock.calls[2][1];
+    const httpCallBody = postBody((b) => b?.type === "httpRequest");
     expect(httpCallBody.config.payloadType).toBe("text");
     expect(httpCallBody.config.payloadText).toBe(
       "plain text body that is not JSON",
@@ -229,7 +238,9 @@ describe("create_tool – HTTP tool path", () => {
     expect(result.childNodes.httpNodeId).toBe(MOCK_IDS.httpNode);
     expect(result.childNodes.postProcessNodeId).toBeUndefined();
 
-    const preCallBody = api.post.mock.calls[2][1];
+    const preCallBody = postBody(
+      (b) => b?.type === "code" && String(b?.label).endsWith("Pre-Process"),
+    );
     expect(preCallBody.type).toBe("code");
     expect(preCallBody.config.code).toContain(
       "input.data = { transformed: true };",
@@ -259,7 +270,9 @@ describe("create_tool – HTTP tool path", () => {
     expect(result.childNodes.httpNodeId).toBe(MOCK_IDS.httpNode);
     expect(result.childNodes.postProcessNodeId).toBe(MOCK_IDS.postNode);
 
-    const postCallBody = api.post.mock.calls[3][1];
+    const postCallBody = postBody(
+      (b) => b?.type === "code" && String(b?.label).endsWith("Post-Process"),
+    );
     expect(postCallBody.type).toBe("code");
     expect(postCallBody.config.code).toContain(
       "input.result = input.httprequest.data;",
@@ -308,39 +321,58 @@ describe("create_tool – HTTP tool path", () => {
 
   it("rolls back all created nodes on failure", async () => {
     mockFlowWithJobNode();
-    api.post
-      .mockResolvedValueOnce({ _id: MOCK_IDS.toolNode })
-      .mockResolvedValueOnce({ _id: MOCK_IDS.resolveNode })
-      .mockRejectedValueOnce(new Error("HTTP node creation failed"));
+    // Fail the HTTP node specifically rather than the Nth call: the branch
+    // gains nodes over time and a positional reject lands on the wrong one.
+    mockPostSequence();
+    api.post.mockImplementation(async (_path: string, body: any) => {
+      if (body?.type === "httpRequest")
+        throw new Error("HTTP node creation failed");
+      if (body?.type === "aiAgentJobTool")
+        return { _id: MOCK_IDS.toolNode } as any;
+      if (body?.type === "aiAgentToolAnswer")
+        return { _id: MOCK_IDS.resolveNode } as any;
+      if (body?.type === "log") return { _id: MOCK_IDS.toolCallLog } as any;
+      return { _id: "aaaaaaaaaaaaaaaaaaaaa0ff" } as any;
+    });
     api.delete.mockResolvedValue({});
 
     const result = await h.handleToolCall("create_tool", baseArgs());
 
     expect(result.error).toBe("HTTP node creation failed");
-    expect(api.delete).toHaveBeenCalledTimes(2);
-    expect(api.delete).toHaveBeenCalledWith(
-      `/v2.0/flows/${ID.flow}/chart/nodes/${MOCK_IDS.resolveNode}`,
-    );
-    expect(api.delete).toHaveBeenCalledWith(
-      `/v2.0/flows/${ID.flow}/chart/nodes/${MOCK_IDS.toolNode}`,
-    );
+    // Everything created so far is removed, the tool-call log node included.
+    for (const id of [
+      MOCK_IDS.resolveNode,
+      MOCK_IDS.toolNode,
+      MOCK_IDS.toolCallLog,
+    ]) {
+      expect(api.delete).toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${id}`,
+      );
+    }
   });
 
   it("reports partial rollback failure when some deletes fail", async () => {
     mockFlowWithJobNode();
-    api.post
-      .mockResolvedValueOnce({ _id: MOCK_IDS.toolNode })
-      .mockResolvedValueOnce({ _id: MOCK_IDS.resolveNode })
-      .mockRejectedValueOnce(new Error("HTTP node creation failed"));
+    api.post.mockImplementation(async (_path: string, body: any) => {
+      if (body?.type === "httpRequest")
+        throw new Error("HTTP node creation failed");
+      if (body?.type === "aiAgentJobTool")
+        return { _id: MOCK_IDS.toolNode } as any;
+      if (body?.type === "aiAgentToolAnswer")
+        return { _id: MOCK_IDS.resolveNode } as any;
+      if (body?.type === "log") return { _id: MOCK_IDS.toolCallLog } as any;
+      return { _id: "aaaaaaaaaaaaaaaaaaaaa0ff" } as any;
+    });
+    // The first delete attempted is the most recently created node.
     api.delete
       .mockRejectedValueOnce(new Error("delete failed"))
-      .mockResolvedValueOnce({});
+      .mockResolvedValue({});
 
     const result = await h.handleToolCall("create_tool", baseArgs());
 
     expect(result.error).toBe("HTTP node creation failed");
     expect(result._hints.action).toContain("Rollback partially failed");
-    expect(result._hints.action).toContain(MOCK_IDS.resolveNode);
+    expect(result._hints.action).toContain(MOCK_IDS.toolCallLog);
   });
 
   it("HTTP node target is pre-process node when pre-process code exists", async () => {
@@ -444,7 +476,7 @@ describe("create_tool – HTTP tool path", () => {
 
     await h.handleToolCall("create_tool", baseArgs());
 
-    const resolveCallBody = api.post.mock.calls[1][1];
+    const resolveCallBody = postBody((b) => b?.type === "aiAgentToolAnswer");
     expect(resolveCallBody.type).toBe("aiAgentToolAnswer");
     expect(resolveCallBody.config.answer).toBe(
       "{{JSON.stringify(input.httprequest)}}",
@@ -514,7 +546,7 @@ describe("create_tool – HTTP tool path", () => {
       },
     });
 
-    const resolveCallBody = api.post.mock.calls[1][1];
+    const resolveCallBody = postBody((b) => b?.type === "aiAgentToolAnswer");
     expect(resolveCallBody.config.answer).toBe(
       "{{JSON.stringify(input.customResult)}}",
     );

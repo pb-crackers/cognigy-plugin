@@ -747,6 +747,11 @@ ADDRESSING: Pass aiAgentId for normal agents. Pass flowId only for LLM Prompt fl
               description:
                 "JavaScript code to run AFTER the HTTP response. Runs in Cognigy's Code Node environment with access to input, context, profile and api (http only). Same runtime notes as preProcessCode.",
             },
+            logToolCalls: {
+              type: "boolean",
+              description:
+                "Default true: a Log node is written at the HEAD of the tool branch recording the tool name and its parameter NAMES (never values — tool arguments routinely carry personal data). At the head so a call that later throws or hangs has still been logged. Level is info, so it appears without enabling the Debug log filter. Set false to skip it.",
+            },
             toolResponseValue: {
               type: "string",
               description:

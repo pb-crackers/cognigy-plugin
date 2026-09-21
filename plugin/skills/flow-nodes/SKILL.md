@@ -372,6 +372,85 @@ the tool config to skip them.
 
 ---
 
+### log — Log Message
+
+Category: data
+
+Write a line to the project logs (**Test > Logs**).
+
+**Config:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| message | string | Yes | The line to write. Supports CognigyScript: `{{input.sessionId}}` |
+| level | string | No | `info`, `debug`, or `error`. Default `debug` |
+
+Two platform facts that decide how you use this:
+
+- **Logs are kept for 24 hours** (the page shows the last 2 by default). Logging
+  is for debugging a live conversation, never for an audit trail — anything that
+  has to outlive the day belongs in an external system via an http tool.
+- **`debug` entries are hidden** in the Logs list until someone enables the
+  Debug filter. Use `info` for anything a person should see without being told
+  to go looking; keep `debug` for detail that would be noise the rest of the
+  time.
+
+Prefer this node over `api.log()` in a Code node: it is declarative, visible in
+the flow chart, editable in the UI, and cannot throw.
+
+---
+
+### debugMessage — Debug Message
+
+Category: data
+
+Writes to the Interaction Panel's debug view **only** — not to the project
+logs. Useful while authoring, invisible in production.
+
+**Config:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| message | string | Yes | The text to show |
+| header | string | No | A label to group it under |
+| level | string | No | `info` or `error`. Default `info` |
+
+---
+
+## Logging practices
+
+**Every tool call is logged automatically.** `create_tool` puts a Log node at
+the **head** of each tool branch:
+
+```
+[tool-call] submit_application args=[fullName, email, phone, ssnLast4]
+```
+
+- **At the head, not the tail.** A log at the end only fires if the branch
+  completes, so the calls that most need explaining — the ones that threw, hung
+  or timed out — would leave no trace at all.
+- **Parameter names, never values.** Tool arguments routinely carry personal
+  data. The names identify the call; the values are what create the liability.
+  Add your own node if you genuinely need a value, and own that decision.
+- **`info` level**, so it shows up without enabling the Debug filter.
+- Reads args from `input.aiAgent.toolArgs` *and* `input.llmPrompt.toolArgs` —
+  under an LLM Prompt node the first is null, so a template reading only one
+  logs nothing there.
+
+Opt out per tool with `logToolCalls: false` in the tool config.
+
+What else is worth logging, and what is not:
+
+| Log this | Skip this |
+| --- | --- |
+| Branch decisions a transcript cannot explain ("chose FHA path, DTI 47%") | Anything the transcript already shows |
+| An external call's outcome and status, not its payload | Full request or response bodies |
+| Identifiers that correlate to another system (ticket, reference) | Credentials, tokens, full account numbers, anything personal |
+| Why a guard fired | A running commentary of every node |
+
+Code node errors are already logged by the generated error envelope — do not
+add a second Log node for them, or the same failure is recorded twice.
+
+---
+
 ### executeFlow — Execute Flow (call and return)
 
 Category: logic

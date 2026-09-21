@@ -545,9 +545,15 @@ describe("LLM Prompt node support", () => {
 
     it("creates an llmPromptTool child plus a Resolve Tool Action node", async () => {
       mockFlowWithLlmPromptNode();
-      api.post
-        .mockResolvedValueOnce({ _id: ID.tool })
-        .mockResolvedValueOnce({ _id: ID.resolve });
+      // Type-aware: the branch also gets a tool-call Log node, so a
+      // positional mock would hand its id to the Resolve node.
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: ID.resolve } as any;
+        if (body?.type === "log")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ae" } as any;
+        return { _id: ID.tool } as any;
+      });
 
       const result = await h.handleToolCall("create_tool", {
         flowId: ID.flow,
@@ -568,13 +574,11 @@ describe("LLM Prompt node support", () => {
           target: ID.node,
         }),
       );
-      expect(api.post).toHaveBeenNthCalledWith(
-        2,
+      expect(api.post).toHaveBeenCalledWith(
         `/v2.0/flows/${ID.flow}/chart/nodes`,
         expect.objectContaining({
           type: "aiAgentToolAnswer",
           mode: "append",
-          target: ID.tool,
         }),
       );
       // No agent resolution happened — the flow was addressed directly.
@@ -583,9 +587,15 @@ describe("LLM Prompt node support", () => {
 
     it("creates an llmPromptMCPTool for toolType mcp", async () => {
       mockFlowWithLlmPromptNode();
-      api.post
-        .mockResolvedValueOnce({ _id: ID.tool })
-        .mockResolvedValueOnce({ _id: ID.resolve });
+      // Type-aware: the branch also gets a tool-call Log node, so a
+      // positional mock would hand its id to the Resolve node.
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: ID.resolve } as any;
+        if (body?.type === "log")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ae" } as any;
+        return { _id: ID.tool } as any;
+      });
 
       await h.handleToolCall("create_tool", {
         flowId: ID.flow,
@@ -605,8 +615,7 @@ describe("LLM Prompt node support", () => {
           }),
         }),
       );
-      expect(api.post).toHaveBeenNthCalledWith(
-        2,
+      expect(api.post).toHaveBeenCalledWith(
         `/v2.0/flows/${ID.flow}/chart/nodes`,
         expect.objectContaining({ type: "aiAgentJobCallMCPTool" }),
       );
@@ -657,9 +666,15 @@ describe("LLM Prompt node support", () => {
 
     it("reports the parent it attached an LLM Prompt tool to", async () => {
       mockFlowWithLlmPromptNode();
-      api.post
-        .mockResolvedValueOnce({ _id: ID.tool })
-        .mockResolvedValueOnce({ _id: ID.resolve });
+      // Type-aware: the branch also gets a tool-call Log node, so a
+      // positional mock would hand its id to the Resolve node.
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: ID.resolve } as any;
+        if (body?.type === "log")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ae" } as any;
+        return { _id: ID.tool } as any;
+      });
 
       const result = await h.handleToolCall("create_tool", {
         flowId: ID.flow,
@@ -722,9 +737,15 @@ describe("LLM Prompt node support", () => {
           },
         ],
       });
-      api.post
-        .mockResolvedValueOnce({ _id: ID.tool })
-        .mockResolvedValueOnce({ _id: ID.resolve });
+      // Type-aware: the branch also gets a tool-call Log node, so a
+      // positional mock would hand its id to the Resolve node.
+      api.post.mockImplementation(async (_path: string, body: any) => {
+        if (body?.type === "aiAgentToolAnswer")
+          return { _id: ID.resolve } as any;
+        if (body?.type === "log")
+          return { _id: "60d5ec49f1a2c8b1a4e0f0ae" } as any;
+        return { _id: ID.tool } as any;
+      });
 
       const result = await h.handleToolCall("create_tool", {
         flowId: ID.flow,
