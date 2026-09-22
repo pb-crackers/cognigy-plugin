@@ -229,7 +229,12 @@ function safeReaddir(path) {
 async function bootCheck() {
   const started = Date.now();
   return new Promise((done) => {
+    // Detached so the whole process group can be killed: npx spawns the real
+    // server as a child, and killing only the npx wrapper leaves that child
+    // running. A doctor meant to be run routinely must not leak an MCP server
+    // on every invocation.
     const proc = spawn("npx", ["-y", "-p", ENGINE_SPEC, "cognigy-mcp"], {
+      detached: true,
       env: {
         ...process.env,
         COGNIGY_API_BASE_URL:
@@ -242,9 +247,15 @@ async function bootCheck() {
     const finish = (result) => {
       clearTimeout(timer);
       try {
-        proc.kill();
+        // Negative pid = the whole group, so the spawned server dies with the
+        // wrapper rather than outliving it.
+        process.kill(-proc.pid, "SIGKILL");
       } catch {
-        /* already gone */
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
       }
       done(result);
     };
