@@ -89,11 +89,11 @@ describe("create_tool – HTTP tool path", () => {
           _id: guardCount === 1 ? MOCK_IDS.preGuard : MOCK_IDS.responseGuard,
         } as any;
       }
-      if (type === "code" && label.endsWith("Pre-Process"))
+      if (type === "code" && label.endsWith("pre-process"))
         return { _id: MOCK_IDS.preNode } as any;
-      if (type === "code" && label.endsWith("Post-Process"))
+      if (type === "code" && label.endsWith("post-process"))
         return { _id: MOCK_IDS.postNode } as any;
-      if (type === "code" && label.endsWith("Report Failure"))
+      if (type === "code" && label.endsWith("report failure"))
         return { _id: MOCK_IDS.handler } as any;
       return { _id: "aaaaaaaaaaaaaaaaaaaaa0ff" } as any;
     });
@@ -239,7 +239,7 @@ describe("create_tool – HTTP tool path", () => {
     expect(result.childNodes.postProcessNodeId).toBeUndefined();
 
     const preCallBody = postBody(
-      (b) => b?.type === "code" && String(b?.label).endsWith("Pre-Process"),
+      (b) => b?.type === "code" && String(b?.label).endsWith("pre-process"),
     );
     expect(preCallBody.type).toBe("code");
     expect(preCallBody.config.code).toContain(
@@ -247,7 +247,7 @@ describe("create_tool – HTTP tool path", () => {
     );
     // Code nodes are wrapped in the error-trace envelope before they are written.
     expect(preCallBody.config.code).toContain(ERROR_TRACE_MARKER);
-    expect(preCallBody.label).toBe("My HTTP Tool - Pre-Process");
+    expect(preCallBody.label).toBe("Code: My HTTP Tool pre-process");
   });
 
   it("creates HTTP tool with post-process code node", async () => {
@@ -271,14 +271,14 @@ describe("create_tool – HTTP tool path", () => {
     expect(result.childNodes.postProcessNodeId).toBe(MOCK_IDS.postNode);
 
     const postCallBody = postBody(
-      (b) => b?.type === "code" && String(b?.label).endsWith("Post-Process"),
+      (b) => b?.type === "code" && String(b?.label).endsWith("post-process"),
     );
     expect(postCallBody.type).toBe("code");
     expect(postCallBody.config.code).toContain(
       "input.result = input.httprequest.data;",
     );
     expect(postCallBody.config.code).toContain(ERROR_TRACE_MARKER);
-    expect(postCallBody.label).toBe("My HTTP Tool - Post-Process");
+    expect(postCallBody.label).toBe("Code: My HTTP Tool post-process");
   });
 
   it("creates HTTP tool with both pre and post-process code nodes", async () => {
@@ -429,7 +429,7 @@ describe("create_tool – HTTP tool path", () => {
     expect(responseGuard.config.condition.condition).toContain("statusCode");
 
     const handlers = api.post.mock.calls.filter(([, b]: any) =>
-      String(b?.label).endsWith("Report Failure"),
+      String(b?.label).endsWith("report failure"),
     );
     expect(handlers).toHaveLength(2);
     // The handler writes a readable failure the LLM can actually verbalise.
@@ -512,20 +512,20 @@ describe("create_tool – HTTP tool path", () => {
     expect(toolCallBody.label).toBe("fetch_user_posts");
 
     const resolveCallBody = bodyOf((b) => b?.type === "aiAgentToolAnswer");
-    expect(resolveCallBody.label).toBe("fetch_user_posts - Resolve");
+    expect(resolveCallBody.label).toBe("RTA: fetch_user_posts");
 
     const preCallBody = bodyOf(
-      (b) => b?.type === "code" && String(b?.label).endsWith("Pre-Process"),
+      (b) => b?.type === "code" && String(b?.label).endsWith("pre-process"),
     );
-    expect(preCallBody.label).toBe("fetch_user_posts - Pre-Process");
+    expect(preCallBody.label).toBe("Code: fetch_user_posts pre-process");
 
     const httpCallBody = bodyOf((b) => b?.type === "httpRequest");
-    expect(httpCallBody.label).toBe("fetch_user_posts - HTTP Request");
+    expect(httpCallBody.label).toBe("HTTP: fetch_user_posts");
 
     const postCallBody = bodyOf(
-      (b) => b?.type === "code" && String(b?.label).endsWith("Post-Process"),
+      (b) => b?.type === "code" && String(b?.label).endsWith("post-process"),
     );
-    expect(postCallBody.label).toBe("fetch_user_posts - Post-Process");
+    expect(postCallBody.label).toBe("Code: fetch_user_posts post-process");
   });
 
   it("uses custom toolResponseValue for HTTP resolve node", async () => {
@@ -847,7 +847,7 @@ describe("update_tool – HTTP child-node resolution", () => {
         type: "code",
         mode: "append",
         target: MOCK_IDS.httpNode,
-        label: "search_recipes - Post-Process",
+        label: "Code: search_recipes post-process",
         config: {
           code: expect.stringContaining(
             "input.recipes = input.httprequest.body.meals;",
@@ -896,7 +896,7 @@ describe("update_tool – HTTP child-node resolution", () => {
         type: "code",
         mode: "append",
         target: MOCK_IDS.toolNode,
-        label: "search_recipes - Pre-Process",
+        label: "Code: search_recipes pre-process",
       }),
     );
   });

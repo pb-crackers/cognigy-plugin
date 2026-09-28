@@ -514,6 +514,8 @@ export const manageFlowNodesSchema = z.object({
   nodeId: idSchema.optional(),
   nodeType: z.string().optional(),
   label: z.string().min(1).max(200).optional(),
+  // the node's Comment field in the editor; "" clears it on update
+  comment: z.string().max(2000).optional(),
   parentNodeId: idSchema.optional(),
   mode: z.enum(["append", "appendChild"]).optional(),
   config: z.record(z.any()).optional(),

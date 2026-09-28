@@ -995,7 +995,12 @@ ADDRESSING: Pass aiAgentId for normal agents. Pass flowId only for LLM Prompt fl
         label: {
           type: "string",
           description:
-            "Display label for the node (required for create, optional for update)",
+            'Display label for the node (required for create, optional for update). Pass only the descriptive part: the plugin adds the naming-convention prefix for the node type (say "Greeting" → "Say: Greeting"; also Q:, Code:, ATC:, RTA:, If:, HTTP:, Log:, Switch:, GoTo:, Wait:, LLM:, Config:, xApp:). For if nodes, name the value being checked ("input.verified", "zip matches"). Execute Flow nodes are named after their target flow automatically. A label that already has the right prefix is kept.',
+        },
+        comment: {
+          type: "string",
+          description:
+            'The node\'s Comment in the Cognigy editor (create/update; "" clears it). Optional: add one only where the flow is complex enough that a reader needs the why — a non-obvious branch, an ordering dependency, a workaround. Keep it to 1-2 sentences.',
         },
         parentNodeId: {
           type: "string",

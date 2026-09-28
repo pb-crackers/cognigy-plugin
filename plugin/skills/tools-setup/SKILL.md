@@ -273,7 +273,7 @@ manage_flow_nodes {
   parentNodeId: "def456...",
   mode: "append",
   nodeType: "ifThenElse",
-  label: "Has Error?",
+  label: "input.error",
   config: { condition: "{{input.error}}" }
 }
 ```

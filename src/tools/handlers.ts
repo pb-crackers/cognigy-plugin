@@ -37,11 +37,11 @@ import {
   reviewHttpBody,
 } from "./cognigyScript.js";
 import { codeNodeHints } from "./codeNodeHints.js";
+import { conventionalLabel, stripLabelPrefix } from "../utils/nodeLabels.js";
 import {
   ERROR_GUARD_CONDITION,
   HTTP_ERROR_GUARD_CONDITION,
   buildHttpFailureHandlerCode,
-  ERROR_GUARD_LABEL_PREFIX,
   PENDING_NODE_ID,
   embeddedNodeId,
   unwrapCode,
@@ -637,6 +637,39 @@ function withCognigyScriptHints<T extends Record<string, any>>(
  *
  * Never fails the tool build: a missing log line is not worth losing a tool.
  */
+/**
+ * Name of the flow an Execute Flow / Go To node points at, for its label.
+ *
+ * `targetFlow` is usually a referenceId (UUID), which only the project's flow
+ * list can map to a name, so the current flow is read first for its project.
+ * Returns undefined when the name can't be found; the caller falls back.
+ */
+async function resolveFlowName(
+  apiClient: CognigyApiClient,
+  currentFlowId: string,
+  targetFlow: string,
+): Promise<string | undefined> {
+  try {
+    if (/^[0-9a-f]{24}$/i.test(targetFlow)) {
+      const flow: any = await apiClient.get(`/v2.0/flows/${targetFlow}`);
+      if (flow?.name) return flow.name;
+    }
+    const current: any = await apiClient.get(`/v2.0/flows/${currentFlowId}`);
+    const projectId = current?.projectReference ?? current?.projectId;
+    const flows: any = await apiClient.get("/v2.0/flows", {
+      params: { ...(projectId ? { projectId } : {}), limit: 100 },
+    });
+    const items: any[] = flows?.items ?? flows ?? [];
+    const match = (Array.isArray(items) ? items : []).find(
+      (f: any) =>
+        f.referenceId === targetFlow || (f._id ?? f.id) === targetFlow,
+    );
+    return match?.name;
+  } catch {
+    return undefined;
+  }
+}
+
 async function createToolCallLogNode(
   apiClient: CognigyApiClient,
   flowId: string,
@@ -1265,7 +1298,7 @@ export class ToolHandlers {
         extension: "@cognigy/basic-nodes",
         mode: "append",
         target: codeNodeId,
-        label: `${ERROR_GUARD_LABEL_PREFIX} ${codeNodeLabel}`,
+        label: `If: ${condition === ERROR_GUARD_CONDITION ? "input.hasError" : "input.hasError or HTTP status >= 400"} (${stripLabelPrefix(codeNodeLabel)})`,
         config: transformConfigForApi("if", { condition }),
       },
     );
@@ -1310,7 +1343,7 @@ export class ToolHandlers {
           extension: "@cognigy/basic-nodes",
           mode: "append",
           target: thenId,
-          label: `${codeNodeLabel} - Report Failure`,
+          label: `Code: ${stripLabelPrefix(codeNodeLabel)} report failure`,
           config: { code: args.handlerCode },
         },
       );
@@ -1328,7 +1361,7 @@ export class ToolHandlers {
         extension: "@cognigy/basic-nodes",
         mode: "append",
         target: thenId,
-        label: "Run Error Handler",
+        label: `Execute: ${(await resolveFlowName(this.apiClient, flowId, errorHandlerFlowId!)) ?? "error handler"}`,
         config: transformConfigForApi("executeFlow", {
           flowId: errorHandlerFlowId,
         }),
@@ -2505,7 +2538,7 @@ export class ToolHandlers {
           target: entryNode._id,
           type: "llmPromptV2",
           extension: "@cognigy/basic-nodes",
-          label: data.name,
+          label: conventionalLabel("llmPromptV2", data.name),
           config: {
             // Prefer whichever field actually has text: a systemPrompt of
             // nothing but whitespace would otherwise provision a node with an
@@ -2564,7 +2597,7 @@ export class ToolHandlers {
         promptNode: {
           nodeId: promptNodeId,
           type: "llmPromptV2",
-          label: data.name,
+          label: conventionalLabel("llmPromptV2", data.name),
         },
         endpoint: filterResponse("endpoint", endpoint),
         endpointUrl: endpoint.URLToken
@@ -4752,7 +4785,7 @@ export class ToolHandlers {
           }
           const resolveLabel =
             resolveSpec.type === "aiAgentToolAnswer"
-              ? `${toolLabel} - Resolve`
+              ? `RTA: ${toolLabel}`
               : resolveSpec.label;
           const resolveNode: any = await this.apiClient.post(
             `/v2.0/flows/${flowId}/chart/nodes`,
@@ -4842,7 +4875,7 @@ export class ToolHandlers {
           extension: "@cognigy/basic-nodes",
           mode: "append",
           target: toolNodeId,
-          label: `${toolLabel} - Resolve`,
+          label: `RTA: ${toolLabel}`,
           config: {
             answer: resolveAnswer,
           },
@@ -4874,7 +4907,7 @@ export class ToolHandlers {
         preProcessNodeId = await this.createWrappedCodeNode({
           flowId,
           target: httpLogNodeId ?? toolNodeId,
-          label: `${toolLabel} - Pre-Process`,
+          label: `Code: ${toolLabel} pre-process`,
           code: cfg.preProcessCode,
         });
         if (preProcessNodeId) createdNodeIds.push(preProcessNodeId);
@@ -4884,7 +4917,7 @@ export class ToolHandlers {
             preGuard = await this.createErrorGuard({
               flowId,
               codeNodeId: preProcessNodeId,
-              codeNodeLabel: `${toolLabel} - Pre-Process`,
+              codeNodeLabel: `Code: ${toolLabel} pre-process`,
               condition: ERROR_GUARD_CONDITION,
               handlerCode: buildHttpFailureHandlerCode(),
             });
@@ -4914,7 +4947,7 @@ export class ToolHandlers {
             preProcessNodeId ??
             httpLogNodeId ??
             toolNodeId,
-          label: `${toolLabel} - HTTP Request`,
+          label: `HTTP: ${toolLabel}`,
           config: httpConfig,
         },
       );
@@ -4928,7 +4961,7 @@ export class ToolHandlers {
         postProcessNodeId = await this.createWrappedCodeNode({
           flowId,
           target: httpNodeId,
-          label: `${toolLabel} - Post-Process`,
+          label: `Code: ${toolLabel} post-process`,
           code: cfg.postProcessCode,
         });
         if (postProcessNodeId) createdNodeIds.push(postProcessNodeId);
@@ -5185,10 +5218,20 @@ export class ToolHandlers {
 
       const findById = (id?: string) =>
         id ? allNodes.find((n) => (n._id || n.id) === id) : undefined;
+      // Matches both the current naming convention and the labels tools
+      // were created with before it, so older tools stay updatable.
+      const CONVENTION_LABELS: Record<string, string> = {
+        "HTTP Request": `HTTP: ${toolLabel}`,
+        "Pre-Process": `Code: ${toolLabel} pre-process`,
+        "Post-Process": `Code: ${toolLabel} post-process`,
+        Resolve: `RTA: ${toolLabel}`,
+      };
       const findByLabelSuffix = (suffix: string, type: string) => {
         if (!toolLabel) return undefined;
-        const target = `${toolLabel} - ${suffix}`;
-        return allNodes.find((n) => n.type === type && n.label === target);
+        const targets = [CONVENTION_LABELS[suffix], `${toolLabel} - ${suffix}`];
+        return allNodes.find(
+          (n) => n.type === type && targets.includes(n.label),
+        );
       };
 
       if (hasHttpUpdates) {
@@ -5230,7 +5273,7 @@ export class ToolHandlers {
                   code: unwrapCode(cfg.preProcessCode),
                   flowId,
                   nodeId: preId,
-                  nodeLabel: preNode.label ?? `${toolLabel} - Pre-Process`,
+                  nodeLabel: preNode.label ?? `Code: ${toolLabel} pre-process`,
                 }),
               },
             },
@@ -5244,7 +5287,7 @@ export class ToolHandlers {
           await this.createWrappedCodeNode({
             flowId,
             target: data.toolNodeId,
-            label: `${toolLabel} - Pre-Process`,
+            label: `Code: ${toolLabel} pre-process`,
             code: cfg.preProcessCode,
           });
           updatedFields.push("preProcessCode");
@@ -5269,7 +5312,8 @@ export class ToolHandlers {
                   code: unwrapCode(cfg.postProcessCode),
                   flowId,
                   nodeId: postId,
-                  nodeLabel: postNode.label ?? `${toolLabel} - Post-Process`,
+                  nodeLabel:
+                    postNode.label ?? `Code: ${toolLabel} post-process`,
                 }),
               },
             },
@@ -5287,7 +5331,7 @@ export class ToolHandlers {
             await this.createWrappedCodeNode({
               flowId,
               target: httpAnchor._id || httpAnchor.id,
-              label: `${toolLabel} - Post-Process`,
+              label: `Code: ${toolLabel} post-process`,
               code: cfg.postProcessCode,
             });
             updatedFields.push("postProcessCode");
@@ -5315,7 +5359,7 @@ export class ToolHandlers {
           updatedFields.push("toolResponseValue");
         } else if (resolveCandidates.length > 1) {
           skippedUpdates.push(
-            `Multiple Resolve Tool Action nodes exist and none matched the label "${toolLabel} - Resolve" — pass config.resolveNodeId (from create_tool's childNodes.resolveNodeId) to pick one`,
+            `Multiple Resolve Tool Action nodes exist and none matched the label "RTA: ${toolLabel}" — pass config.resolveNodeId (from create_tool's childNodes.resolveNodeId) to pick one`,
           );
         } else {
           skippedUpdates.push(
@@ -5554,6 +5598,15 @@ export class ToolHandlers {
           );
         }
 
+        // Naming convention: the plugin owns the "<Prefix>: " part. An
+        // Execute Flow node is named after the flow it runs.
+        const targetFlow: string | undefined =
+          data.config?.flowId ?? data.config?.flowNode?.flow;
+        const label =
+          entry.type === "executeFlow" && targetFlow
+            ? `Execute: ${(await resolveFlowName(this.apiClient, flowId, targetFlow)) ?? stripLabelPrefix(data.label)}`
+            : conventionalLabel(entry.type, data.label);
+
         const cfg = data.config ?? {};
         const aliasMap: Record<string, string[]> = {
           milliseconds: ["milliseconds", "delay"],
@@ -5682,7 +5735,7 @@ export class ToolHandlers {
                 code: data.config!.code,
                 flowId,
                 nodeId: PENDING_NODE_ID,
-                nodeLabel: data.label,
+                nodeLabel: label,
               }),
             }
           : data.config;
@@ -5698,7 +5751,8 @@ export class ToolHandlers {
             extension: entry.extension,
             mode,
             target: targetNodeId,
-            label: data.label,
+            label,
+            ...(data.comment ? { comment: data.comment } : {}),
             ...(apiConfig && Object.keys(apiConfig).length > 0
               ? { config: apiConfig }
               : {}),
@@ -5733,7 +5787,7 @@ export class ToolHandlers {
         const result: Record<string, any> = {
           nodeId,
           type: entry.type,
-          label: data.label,
+          label: label,
           ...(actualParentId ? { parentId: actualParentId } : {}),
           targetNodeId,
           mode,
@@ -5758,7 +5812,7 @@ export class ToolHandlers {
                     code: data.config!.code,
                     flowId,
                     nodeId,
-                    nodeLabel: data.label,
+                    nodeLabel: label,
                   }),
                 },
               },
@@ -5774,7 +5828,7 @@ export class ToolHandlers {
               result.errorGuard = await this.createErrorGuard({
                 flowId,
                 codeNodeId: nodeId,
-                codeNodeLabel: data.label,
+                codeNodeLabel: label,
                 errorHandlerFlowId: data.errorHandlerFlowId,
               });
             } catch (err: any) {
@@ -5846,24 +5900,34 @@ export class ToolHandlers {
           );
         }
 
-        if (!data.config && !data.label) {
+        if (!data.config && !data.label && data.comment === undefined) {
           return withHints(
-            { error: "Nothing to update. Provide at least label or config." },
+            {
+              error:
+                "Nothing to update. Provide at least label, comment or config.",
+            },
             { action: "Include fields to update in the request." },
           );
         }
 
         const patchPayload: any = {};
-        if (data.label) patchPayload.label = data.label;
         // Declared outside the `if` so the post-write Code Node hints below
-        // can see the type fetched here.
+        // can see the type fetched here. A new label needs the type too, for
+        // its naming-convention prefix.
         let nodeType = "";
-        if (data.config) {
-          const existingNode: any = await this.apiClient.get(
+        let existingNode: any;
+        if (data.config || data.label) {
+          existingNode = await this.apiClient.get(
             `/v2.0/flows/${flowId}/chart/nodes/${data.nodeId}`,
           );
           nodeType = existingNode?.type ?? "";
-
+        }
+        const label = data.label
+          ? conventionalLabel(nodeType, data.label)
+          : undefined;
+        if (label) patchPayload.label = label;
+        if (data.comment !== undefined) patchPayload.comment = data.comment;
+        if (data.config) {
           // Strip server-computed, read-only fields before merging them back
           // into the PATCH. `transpiled` (a code node's compiled JS) can be
           // ~200k chars, and echoing `hasError` back is meaningless.
@@ -5921,7 +5985,7 @@ export class ToolHandlers {
               {
                 updated: true,
                 nodeId: data.nodeId,
-                ...(data.label ? { label: data.label } : {}),
+                ...(label ? { label } : {}),
                 ...(data.config
                   ? { configUpdated: Object.keys(data.config) }
                   : {}),
@@ -5949,8 +6013,7 @@ export class ToolHandlers {
                   code: unwrapCode(data.config.code),
                   flowId,
                   nodeId: priorId,
-                  nodeLabel:
-                    data.label ?? existingNode?.label ?? "(unlabelled)",
+                  nodeLabel: label ?? existingNode?.label ?? "(unlabelled)",
                 }),
               };
             }
@@ -5968,7 +6031,7 @@ export class ToolHandlers {
         let result: Record<string, any> = {
           updated: true,
           nodeId: data.nodeId,
-          ...(data.label ? { label: data.label } : {}),
+          ...(label ? { label } : {}),
           ...(data.config ? { configUpdated: Object.keys(data.config) } : {}),
         };
 
@@ -7093,7 +7156,7 @@ export class ToolHandlers {
               extension: "@cognigy/voicegateway2",
               mode: "prepend",
               target: fix.targetNodeId,
-              label: fix.label,
+              label: conventionalLabel("setSessionConfig", fix.label),
               config: fix.config,
             },
           );
