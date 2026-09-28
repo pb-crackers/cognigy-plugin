@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
-import { codeNodeWarnings } from "../tools/codeNodeHints.js";
+import { codeNodeHints, codeNodeWarnings } from "../tools/codeNodeHints.js";
 
 describe("codeNodeWarnings", () => {
   it.each([
@@ -66,5 +66,29 @@ describe("codeNodeWarnings", () => {
     );
     expect(hints).toHaveLength(4);
     expect(hints[3]).toContain("local helper");
+  });
+});
+
+describe("codeNodeHints", () => {
+  it.each([
+    ["a line comment", "// Totals the cart.\ninput.total = 1;"],
+    ["a block comment", "/* Totals the cart. */\ninput.total = 1;"],
+    ["leading blank lines", "\n\n  // Totals the cart.\ninput.total = 1;"],
+    ["empty code", ""],
+  ])("accepts code opening with %s", (_name, code) => {
+    expect(codeNodeHints(code)).toEqual([]);
+  });
+
+  it("asks for a purpose comment when the code opens without one", () => {
+    const hints = codeNodeHints("input.total = 1; // Totals the cart.");
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toContain("1-3 line comment");
+  });
+
+  it("keeps runtime API hints alongside the comment hint", () => {
+    const hints = codeNodeHints("await fetch('x');");
+    expect(hints).toHaveLength(3);
+    expect(hints[0]).toContain("fetch()/XMLHttpRequest");
+    expect(hints[2]).toContain("1-3 line comment");
   });
 });

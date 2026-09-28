@@ -2797,7 +2797,9 @@ describe("ToolHandlers v2", () => {
         mode: "appendChild",
         nodeType: "code",
         label: "Cleanup",
-        config: { code: "context.done = true; api.say('done');" },
+        config: {
+          code: "// Marks the job done and tells the caller.\ncontext.done = true; api.say('done');",
+        },
       });
       expect(result.nodeId).toBe(codeNodeId);
       expect(result._hints?.warning).toBeUndefined();
@@ -2919,7 +2921,7 @@ describe("ToolHandlers v2", () => {
         operation: "update",
         flowId: ID.flow,
         nodeId: codeNodeId,
-        config: { code: "input.ok = 1;" },
+        config: { code: "// Flags the result as ok.\ninput.ok = 1;" },
       });
 
       expect(result.updated).toBe(true);

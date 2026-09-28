@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
-import { ERROR_TRACE_MARKER } from "../utils/errorTrace.js";
+import {
+  ERROR_TRACE_MARKER,
+  wrapCodeWithErrorTrace,
+} from "../utils/errorTrace.js";
 
 const ID = {
   project: "60d5ec49f1a2c8b1a4e0f000",
@@ -219,5 +222,36 @@ describe("code node error guard", () => {
       created: false,
       error: "chart is locked",
     });
+  });
+});
+
+describe("code node get", () => {
+  it("returns the author's code without the error-trace envelope", async () => {
+    const body = "input.result = 1;";
+    const api = {
+      get: jest.fn(async () => ({
+        _id: ID.codeNode,
+        type: "code",
+        label: "Compute",
+        config: {
+          code: wrapCodeWithErrorTrace({
+            code: body,
+            flowId: ID.flow,
+            nodeId: ID.codeNode,
+            nodeLabel: "Compute",
+          }),
+        },
+      })),
+    } as any;
+    const h = new ToolHandlers(api, "https://endpoint.example", "", "");
+
+    const result: any = await h.handleToolCall("manage_flow_nodes", {
+      operation: "get",
+      flowId: ID.flow,
+      nodeId: ID.codeNode,
+    });
+
+    expect(result.config.code).toBe(body);
+    expect(result.config.code).not.toContain(ERROR_TRACE_MARKER);
   });
 });

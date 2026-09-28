@@ -834,7 +834,8 @@ describe("update_tool – HTTP child-node resolution", () => {
       toolNodeId: MOCK_IDS.toolNode,
       toolType: "http",
       config: {
-        postProcessCode: "input.recipes = input.httprequest.body.meals;",
+        postProcessCode:
+          "// Pulls the meal list out of the response.\ninput.recipes = input.httprequest.body.meals;",
       },
     });
 

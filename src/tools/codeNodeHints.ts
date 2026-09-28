@@ -59,3 +59,22 @@ export function codeNodeWarnings(code: string): string[] {
   );
   return hints.length > 0 ? [...hints, CAVEAT] : [];
 }
+
+const PURPOSE_COMMENT_HINT =
+  "Code nodes open with a 1-3 line comment saying what the node does, e.g. `// Builds the cart summary the agent reads back to the caller.` — add one with an update.";
+
+/** True when the first non-blank thing in the code is a `//` or `/*` comment. */
+const opensWithComment = (code: string): boolean =>
+  /^\s*(?:\/\/|\/\*)/.test(code);
+
+/**
+ * Every `codeNodeWarnings` sentence plus a nudge when the code does not open
+ * with a comment explaining its purpose. Empty code is left alone.
+ */
+export function codeNodeHints(code: string): string[] {
+  const hints = codeNodeWarnings(code);
+  if (code.trim() !== "" && !opensWithComment(code)) {
+    hints.push(PURPOSE_COMMENT_HINT);
+  }
+  return hints;
+}

@@ -36,7 +36,7 @@ import {
   reviewCognigyScriptPayload,
   reviewHttpBody,
 } from "./cognigyScript.js";
-import { codeNodeWarnings } from "./codeNodeHints.js";
+import { codeNodeHints } from "./codeNodeHints.js";
 import {
   ERROR_GUARD_CONDITION,
   HTTP_ERROR_GUARD_CONDITION,
@@ -4976,7 +4976,7 @@ export class ToolHandlers {
       // Hints about runtime APIs the pre/post-process code uses but the Code
       // Node runtime does not have (the code was written regardless).
       for (const code of [cfg.preProcessCode, cfg.postProcessCode]) {
-        if (code) parameterWarnings.push(...codeNodeWarnings(code));
+        if (code) parameterWarnings.push(...codeNodeHints(code));
       }
       const httpResult =
         parameterWarnings.length > 0
@@ -5341,7 +5341,7 @@ export class ToolHandlers {
     for (const field of ["preProcessCode", "postProcessCode"] as const) {
       const code = cfg?.[field];
       if (typeof code === "string" && updatedFields.includes(field)) {
-        parameterWarnings.push(...codeNodeWarnings(code));
+        parameterWarnings.push(...codeNodeHints(code));
       }
     }
 
@@ -5503,6 +5503,13 @@ export class ToolHandlers {
           `/v2.0/flows/${flowId}/chart/nodes/${data.nodeId}`,
         );
         const detail = filterFlowNodeDetail(node);
+
+        // Hand back only the author's code. The error-trace envelope is
+        // plugin-owned and re-applied on every write, so exposing it just
+        // invites the caller to edit or copy it.
+        if (typeof detail.config?.code === "string") {
+          detail.config.code = unwrapCode(detail.config.code);
+        }
 
         // Code nodes are TypeScript, transpiled server-side at save time.
         // hasError = true means the last saved code did not compile.
@@ -5785,14 +5792,14 @@ export class ToolHandlers {
         // envelope's api.* calls are legitimate and must not be flagged.
         const codeWarnings =
           entry.type === "code" && typeof data.config?.code === "string"
-            ? codeNodeWarnings(data.config.code)
+            ? codeNodeHints(data.config.code)
             : [];
         if (codeWarnings.length > 0) {
           return withRenderSuggestion(
             withHints(result, {
               warning: codeWarnings.join(" "),
               action:
-                "The node was created. If the flagged call is real, replace it with manage_flow_nodes update.",
+                "The node was created. Fix anything flagged with manage_flow_nodes update.",
             }),
             flowId,
             nodeId,
@@ -5976,7 +5983,7 @@ export class ToolHandlers {
         // does not have; the node was updated regardless.
         const codeWarnings =
           nodeType === "code" && typeof data.config?.code === "string"
-            ? codeNodeWarnings(data.config.code)
+            ? codeNodeHints(data.config.code)
             : [];
 
         // The PATCH response echoes the input config without the server-computed
@@ -6009,7 +6016,7 @@ export class ToolHandlers {
             withHints(result, {
               warning: codeWarnings.join(" "),
               action:
-                "The node was updated. If the flagged call is real, replace it with another update.",
+                "The node was updated. Fix anything flagged with another update.",
             }),
             flowId,
             data.nodeId,
