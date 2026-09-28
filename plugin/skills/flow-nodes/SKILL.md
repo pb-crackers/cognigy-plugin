@@ -52,6 +52,38 @@ Pass an explicit `parentNodeId` whenever you need to branch or insert rather tha
 7. Delete a node — manage_flow_nodes { operation: 'delete', flowId, nodeId: '<id>' }
 ```
 
+## Naming and comments
+
+**Labels follow `<Prefix>: <what it does>`, and the plugin adds the prefix.** Pass only the descriptive part: `label: "Greeting"` on a say node is saved as `Say: Greeting`. A label that already has the right prefix is kept.
+
+| Node | Prefix | Example |
+| --- | --- | --- |
+| say | `Say:` | `Say: Greeting` |
+| question | `Q:` | `Q: Ask for zip` |
+| code | `Code:` | `Code: Verify zip` |
+| setSessionContext (Add to Context) | `ATC:` | `ATC: Store caller name` |
+| Resolve Tool Action | `RTA:` | `RTA: lookup_application` |
+| ifThenElse | `If:` | `If: input.verified` |
+| executeFlow | `Execute:` | `Execute: Error Handler` (always the target flow's name) |
+| httpRequest | `HTTP:` | `HTTP: Get slots` |
+| log | `Log:` | `Log: tool call book_slot` |
+| lookup (switch) | `Switch:` | `Switch: context.intent` |
+| goTo | `GoTo:` | `GoTo: Handover` |
+| sleep | `Wait:` | `Wait: Before retry` |
+| llmPrompt | `LLM:` | `LLM: Summarize call` |
+| setSessionConfig | `Config:` | `Config: Barge-in on` |
+| xApp nodes | `xApp:` | `xApp: Seat picker` |
+
+- **If nodes name what is checked:** the variable or fact the condition tests (`input.verified`, `zip matches`, `context.slots.length`), not a question like "Check VIP". Then / Else keep their default labels.
+- **Tool nodes** (`aiAgentJobTool`) keep the tool name, because the LLM sees it. Then, Else and case nodes aren't prefixed.
+- Nodes the plugin generates follow the same pattern: `RTA: <tool>`, `Code: <tool> pre-process`, `HTTP: <tool>`, `If: input.hasError (<code node>)`, `Log: tool call <tool>`.
+- Existing nodes aren't renamed. The convention applies to what you create or relabel.
+
+**Comments: add one only where it helps.** `comment` sets the node's Comment in the Cognigy editor, on `create` or `update` (`""` clears it). Most nodes need none; the label says enough. Add a 1-2 sentence comment when the flow is complex enough that a reader needs the *why*:
+- a branch whose condition isn't obvious from the label
+- an ordering dependency ("must run before the lookup — it seeds `context.mockDb`")
+- a workaround or a deliberate deviation from the FRD
+
 ## Placement
 
 - **Inside a tool (agent flows)**: Set `parentNodeId` to the tool node ID (from `create_tool`) and `mode` to `appendChild`. The handler automatically places the node in the correct execution chain (before the Resolve Tool Action node). Both `appendChild` and `append` work correctly when targeting a tool node.
@@ -152,7 +184,7 @@ Branch the flow based on a CognigyScript condition. Auto-creates `then` and `els
   "operation": "create",
   "flowId": "<flowId>",
   "nodeType": "ifThenElse",
-  "label": "Check VIP",
+  "label": "context.isVIP",
   "config": {
     "condition": "context.isVIP === true"
   }
@@ -306,7 +338,7 @@ If the code throws, the error is logged to the project logs, the trace is
 written to `input.errorTrace`, `context.lastError` and `context.errors`
 (appended), and `input.hasError` is set to `true`.
 
-An **Error Guard** is appended automatically after each code node:
+An **Error Guard** (`If: input.hasError (<code node>)`) is appended automatically after each code node:
 
 ```
 code node
@@ -633,7 +665,7 @@ Step 1: Create the ifThenElse node
 manage_flow_nodes {
   operation: "create", flowId: "<flowId>",
   parentNodeId: "<toolNodeId>", mode: "appendChild",
-  nodeType: "ifThenElse", label: "Check VIP",
+  nodeType: "ifThenElse", label: "context.isVIP",
   config: { condition: "context.isVIP === true" }
 }
 → returns nodeId: "if123..."

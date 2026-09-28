@@ -35,7 +35,7 @@ const TOOL_ID_EXPR =
 export const TOOL_CALL_LOG_LEVEL = "info";
 
 /** Label prefix for generated tool-call log nodes. */
-export const TOOL_CALL_LOG_LABEL_PREFIX = "Log Tool Call:";
+export const TOOL_CALL_LOG_LABEL_PREFIX = "Log: tool call";
 
 /**
  * CognigyScript for a tool-call log line.

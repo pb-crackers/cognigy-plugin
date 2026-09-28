@@ -115,7 +115,7 @@ describe("code node error guard", () => {
     expect(guardPost).toBeDefined();
     const [, guardBody]: any = guardPost!;
     expect(guardBody.target).toBe(ID.codeNode);
-    expect(guardBody.label).toBe("Error Guard: Compute");
+    expect(guardBody.label).toBe("If: input.hasError (Compute)");
     expect(guardBody.config.condition.condition).toBe("{{input.hasError}}");
   });
 

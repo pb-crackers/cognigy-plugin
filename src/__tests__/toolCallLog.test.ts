@@ -126,7 +126,7 @@ describe("create_tool writes a tool-call Log node", () => {
     )!;
     expect(body.config.level).toBe(TOOL_CALL_LOG_LEVEL);
     expect(body.config.level).toBe("info");
-    expect(body.label).toBe("Log Tool Call: submit_application");
+    expect(body.label).toBe("Log: tool call submit_application");
   });
 
   it("omits the log node when logToolCalls is false", async () => {
