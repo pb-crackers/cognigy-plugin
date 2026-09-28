@@ -143,8 +143,9 @@ rules are in the flow-nodes guide under `httpRequest`.
 
 #### Code node rules
 
-Both `preProcessCode` and `postProcessCode` run inside Cognigy Code nodes. Two rules apply:
+Both `preProcessCode` and `postProcessCode` run inside Cognigy Code nodes. Three rules apply:
 
+- **Open with a 1-3 line comment saying what the code does.** e.g. `// Pulls the current conditions out of the weather response.` Code without one is written anyway and flagged in `_hints.warning`.
 - **No top-level `return`.** Code nodes are not full functions; the engine rejects `return` at the top level. Mutate `input` directly — `input.foo = bar;` instead of `return { foo: bar };`. If you need to short-circuit, set a flag and check it in a downstream node.
 - **`input` is the only persistent surface.** Anything you write to `input.*` is visible to subsequent nodes (post-process, Resolve, downstream flow). Local `const`/`let` variables disappear at the end of the node.
 
@@ -162,7 +163,7 @@ parameters: '{"type":"object","properties":{"city":{"type":"string","description
 url: "https://api.weather.com/v1/current?q={{input.aiAgent.toolArgs.city}}",
 method: "GET",
 headers: { "X-Api-Key": "your-api-key" },
-postProcessCode: "input.weather = input.httprequest.result.current; delete input.httprequest;"
+postProcessCode: "// Keeps only the current conditions for the agent.\ninput.weather = input.httprequest.result.current; delete input.httprequest;"
 }
 }
 ```
@@ -182,8 +183,8 @@ url: "https://api.example.com/orders",
 method: "POST",
 headers: { "Authorization": "Bearer {{context.apiToken}}" },
 body: "{{JSON.stringify(input.orderPayload)}}",
-preProcessCode: "input.orderPayload = { items: input.aiAgent.toolArgs.items, customer: input.aiAgent.toolArgs.customerId, timestamp: new Date().toISOString() };",
-postProcessCode: "input.orderResult = { orderId: input.httprequest.result.id, status: input.httprequest.result.status }; delete input.httprequest;",
+preProcessCode: "// Builds the order payload from the tool arguments.\ninput.orderPayload = { items: input.aiAgent.toolArgs.items, customer: input.aiAgent.toolArgs.customerId, timestamp: new Date().toISOString() };",
+postProcessCode: "// Returns just the order id and status to the agent.\ninput.orderResult = { orderId: input.httprequest.result.id, status: input.httprequest.result.status }; delete input.httprequest;",
 toolResponseValue: "{{JSON.stringify(input.orderResult)}}"
 }
 }

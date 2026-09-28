@@ -243,6 +243,16 @@ Run custom **TypeScript** (a single source string — not multiple files, not HT
 | `api`     | The platform API — `api.say()`, `api.output()`, `api.addToContext()`, `api.log()`, `api.setNextNode()`, … ([reference](https://docs.cognigy.com/ai/for-developers/code/api-functions)). `actions.*` is the legacy alias of `api.*`; only `api` is supported. |
 | modules   | Preinstalled modules are **globals**, not imports: `moment`, `_` (Lodash), `xmljs`, `getTextCleaner()` ([reference](https://docs.cognigy.com/ai/for-developers/code/modules)).                              |
 
+**Start every code node with a 1-3 line comment saying what it does.** It is the first thing someone opening the node in Cognigy reads, so say *why* the node exists, not how the code works:
+
+```ts
+// Builds the cart summary the agent reads back to the caller.
+// Empty cart → empty string, so the agent can say there is nothing to order.
+const items = context.cartItems || [];
+```
+
+Code that does not open with a comment is written anyway and flagged in `_hints.warning`.
+
 **Runtime constraints — the Code Node runtime does not have these. `manage_flow_nodes` and `create_tool`/`update_tool` write the code anyway and flag them in `_hints.warning`; don't use them:**
 
 - `api.httpRequest()` — exists only in Cognigy Functions, not Code Nodes. Use an HTTP Request node and read `input.httprequest`.
@@ -255,7 +265,7 @@ Run custom **TypeScript** (a single source string — not multiple files, not HT
 - `api.deleteContext("a.b")` — only removes **top-level** keys; a dot-path silently does nothing. Use `delete context.a.b;`.
 - More than 100 `api.*` calls per execution — the platform aborts the node ([limits](https://docs.cognigy.com/ai/administer/limitations)).
 
-Anything the platform supports is not gated: there is no required code shape, no `api.*` allowlist, and `Date.prototype.toLocaleString()` and friends work (the editor's red underline on `Date` is the browser's type checker, not a runtime error).
+Anything the platform supports is not gated: beyond the opening comment there is no required code shape, no `api.*` allowlist, and `Date.prototype.toLocaleString()` and friends work (the editor's red underline on `Date` is the browser's type checker, not a runtime error).
 
 **Config:**
 | Field | Type | Required | Description |
@@ -281,68 +291,32 @@ Then send the full new `code` string on `update` (config is merged; `code` is re
   "nodeType": "code",
   "label": "Format Response",
   "config": {
-    "code": "const items = context.cartItems || [];\ninput.cartSummary = items.map((i: { name: string; price: number }) => `${i.name}: $${i.price}`).join('\\n');"
+    "code": "// Builds the cart summary the agent reads back to the caller.\nconst items = context.cartItems || [];\ninput.cartSummary = items.map((i: { name: string; price: number }) => `${i.name}: $${i.price}`).join('\\n');"
   }
 }
 ```
 
-#### Automatic error handling (you get this for free — do not hand-roll it)
+#### Automatic error handling
 
-An uncaught throw inside a Code Node **stops flow execution outright**: the turn
-ends, the caller gets an empty response, and nothing is logged. `hasError` only
-reports *transpile* failures and `input.codeNodeError` only covers timeouts and
-event-limit breaches, so a plain runtime `TypeError` — reading a property of an
-`undefined` object is the classic one — leaves no trace at all.
+Just write the code. The plugin adds the error handling itself on every
+`create` and `update`, and `get` returns only your code, so there is nothing
+to write, copy, or preserve.
 
-Every code node written through `manage_flow_nodes` (and every http-tool
-pre/post-process node) is therefore wrapped automatically:
-
-```
-input.hasError = false;
-try {
-/* >>> user code >>> */
-   ...exactly the code you supplied...
-/* <<< user code <<< */
-} catch (caughtError) {
-   ...builds the trace, sets input.hasError = true...
-}
-```
-
-**Write plain code and pass it as normal.** Do NOT add your own try/catch for
-this purpose, and do NOT try to reproduce the envelope — it is applied on both
-`create` and `update`, and re-wrapping is idempotent (the body is unwrapped
-first, so envelopes never nest).
-
-On error the standard trace is written to `context.errors` (appended),
-`context.lastError`, `input.errorTrace`, and the project logs:
-
-| Field                       | Source                                     |
-| --------------------------- | ------------------------------------------ |
-| `traceId`                   | generated per error                        |
-| `timestamp`                 | ISO 8601                                   |
-| `flowId` / `nodeId`         | baked in at authoring time                 |
-| `nodeLabel`                 | the node's label                           |
-| `flowName`                  | `input.flowName`                           |
-| `errorName` / `errorMessage`| the thrown error                           |
-| `stack`                     | first 12 frames                            |
-| `sessionId` / `userId`      | `input.*`                                  |
-| `toolId` / `toolArgs`       | `input.aiAgent.*` when inside a tool branch|
-
-There is no runtime accessor for a node's own id inside a Code Node, so `flowId`
-and `nodeId` are written in as literals. That is why `create` is a two-pass
-operation — the node is POSTed, then PATCHed once its id exists.
+If the code throws, the error is logged to the project logs, the trace is
+written to `input.errorTrace`, `context.lastError` and `context.errors`
+(appended), and `input.hasError` is set to `true`.
 
 An **Error Guard** is appended automatically after each code node:
 
 ```
-code node (wrapped)
+code node
   └─ if {{input.hasError}}
        ├─ then → (empty — put the user-facing handling here)
        └─ else → (continue)
 ```
 
 The guard is a **branch point, not a handler**. The error is already logged by
-the code node's own catch block, so nothing logs it again here — a shared
+the automatic error handling, so nothing logs it again here — a shared
 handler flow would just emit the same payload twice. What the caller should
 experience belongs to the flow that failed, so fill the then-branch in that
 flow: a `say`, a fallback value, a skip, a handover.
@@ -355,13 +329,13 @@ flows permanently and never comes back.
 
 | Parameter            | Default | Effect                                              |
 | -------------------- | ------- | --------------------------------------------------- |
-| `errorTrace`         | `true`  | Set `false` to write the code completely unwrapped.  |
-| `errorGuard`         | `true`  | Set `false` to wrap the code but skip the guard node.|
+| `errorTrace`         | `true`  | Set `false` to add no error handling at all.        |
+| `errorGuard`         | `true`  | Set `false` to keep error handling but skip the guard.|
 | `errorHandlerFlowId` | —       | Opt in to a shared side-trip flow in the then-branch. |
 
 **http tools get this too, with one difference.** `create_tool { toolType: "http" }`
 builds a chain — pre-process → HTTP Request → post-process → Resolve — whose
-code nodes are wrapped and guarded like any other. Their guards are NOT empty:
+code nodes get the same error handling and guards. Their guards are NOT empty:
 each writes a readable failure into the tool result, because an http tool that
 fails silently answers with nothing at all (post-process never sets
 `input.result`, Resolve hands the LLM an empty value, and the LLM emits no
@@ -446,7 +420,7 @@ What else is worth logging, and what is not:
 | Identifiers that correlate to another system (ticket, reference) | Credentials, tokens, full account numbers, anything personal |
 | Why a guard fired | A running commentary of every node |
 
-Code node errors are already logged by the generated error envelope — do not
+Code node errors are already logged by the automatic error handling — do not
 add a second Log node for them, or the same failure is recorded twice.
 
 ---
