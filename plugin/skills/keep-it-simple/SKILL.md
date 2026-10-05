@@ -28,11 +28,10 @@ Two rungs work → take the higher one.
 ## Code nodes
 
 - Opening comment: 1-3 lines on *why* the node exists (required by the plugin). No other comments unless a line is genuinely surprising.
-- **No `try/catch`, no `api.log`** for errors. The plugin already wraps every Code node with error tracing and an Error Guard.
+- **Let errors throw.** On every create/update the plugin wraps your code in its own try/catch (`src/utils/errorTrace.ts`), which records the stack trace, logs it, and sets `input.hasError` for the Error Guard. A `try/catch` of your own swallows the error before the wrapper sees it, so you lose the trace and the guard never fires. Catch only when you deliberately handle an expected failure (e.g. `JSON.parse` with a fallback value).
 - No helper functions, classes, config objects or type declarations for something used once. Inline it.
 - No defensive checks on values the flow guarantees. Guard only what can really be missing (optional tool args, API responses, first-turn context).
 - Write the result where the next node reads it (`input.x` or `context.x`). Don't return wrapped objects nobody unwraps.
-- Aim for under ~20 lines. If it runs longer, ask whether a native node or a second, simpler node would do instead.
 
 Too much:
 ```ts

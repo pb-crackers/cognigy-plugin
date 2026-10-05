@@ -148,7 +148,7 @@ Both `preProcessCode` and `postProcessCode` run inside Cognigy Code nodes. Four 
 - **Open with a 1-3 line comment saying what the code does.** e.g. `// Pulls the current conditions out of the weather response.` Code without one is written anyway and flagged in `_hints.warning`.
 - **No top-level `return`.** Code nodes are not full functions; the engine rejects `return` at the top level. Mutate `input` directly — `input.foo = bar;` instead of `return { foo: bar };`. If you need to short-circuit, set a flag and check it in a downstream node.
 - **`input` is the only persistent surface.** Anything you write to `input.*` is visible to subsequent nodes (post-process, Resolve, downstream flow). Local `const`/`let` variables disappear at the end of the node.
-- **Keep it short.** Skip them entirely if the raw response is already usable. No `try/catch` or error logging (the plugin adds both), no one-use helpers. See the `keep-it-simple` skill.
+- **Keep it short.** Skip them entirely if the raw response is already usable. Let errors throw: the plugin's wrapper captures the stack trace, and a `try/catch` of your own hides it. No one-use helpers. See the `keep-it-simple` skill.
 
 #### Example — simple GET with post-processing
 
