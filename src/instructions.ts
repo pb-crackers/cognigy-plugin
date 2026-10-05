@@ -23,6 +23,7 @@ DOCUMENTATION LOOKUP:
 - Only fall back to search_cognigy_documentation when you cannot guess the docs' vocabulary at all. It takes just a query string (no result limit, no filters) and returns matched pages WHOLE rather than as excerpts, so its payload scales with page size, not relevance: results are routinely 90KB+ and can exceed the tool-result limit outright, returning nothing usable. If a result does overflow into a file, triage it by extracting the \`Title:\`/\`Page:\` lines and then read the best one or two pages with the filesystem tool — never read the dump whole.
 
 RULES:
+- KEEP IT SIMPLE: build the smallest thing that works. Reuse what the project already has, prefer agent instructions and native nodes over Code nodes, and keep Code nodes short with no try/catch, logging or one-use helpers (the plugin adds error handling). Fewest nodes, tools and flows; change before add. The keep-it-simple skill has the full ladder.
 - create_ai_agent auto-provisions flow + AI Agent Job Node + REST endpoint. Do NOT create these separately.
 - Build agents with the AI Agent node by default. Use LLM Prompt (llmPromptV2) only when the user asks for it by name; those flows have no agent resource, so address tools with flowId.
 - An LLM resource MUST exist AND be successfully connected in the project before calling talk_to_agent. Do NOT test an agent without a confirmed working LLM — it fails silently or returns empty responses. If LLM setup failed or was not completed, skip testing and inform the user.
