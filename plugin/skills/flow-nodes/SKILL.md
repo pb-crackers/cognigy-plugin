@@ -275,7 +275,7 @@ Run custom **TypeScript** (a single source string — not multiple files, not HT
 | `api`     | The platform API — `api.say()`, `api.output()`, `api.addToContext()`, `api.log()`, `api.setNextNode()`, … ([reference](https://docs.cognigy.com/ai/for-developers/code/api-functions)). `actions.*` is the legacy alias of `api.*`; only `api` is supported. |
 | modules   | Preinstalled modules are **globals**, not imports: `moment`, `_` (Lodash), `xmljs`, `getTextCleaner()` ([reference](https://docs.cognigy.com/ai/for-developers/code/modules)).                              |
 
-**Reach for a Code node last.** If a native node or a CognigyScript field does the job, use that. When you do write one, keep it short and let errors throw. The plugin's wrapper (below) captures the stack trace; a `try/catch` of your own swallows it. No one-use helpers. See the `keep-it-simple` skill.
+**Reach for a Code node last.** If a native node or a CognigyScript field does the job, use that. See the `keep-it-simple` skill.
 
 **Start every code node with a 1-3 line comment saying what it does.** It is the first thing someone opening the node in Cognigy reads, so say *why* the node exists, not how the code works:
 

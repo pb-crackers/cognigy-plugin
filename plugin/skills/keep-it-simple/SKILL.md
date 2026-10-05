@@ -1,77 +1,85 @@
 ---
 name: keep-it-simple
-description: "Use on ANY Cognigy build or change — writing Code nodes, creating tools, adding flow nodes, editing agent instructions, fixing a bug — to pick the smallest build that works: native node before Code node, existing resource before new one, one line before fifty. Also use when the user says keep it simple, simplest, minimal, smallest change, YAGNI, over-engineered, too complex, or bloated."
+description: "Use on ANY Cognigy build or change — agents, tools, flows, flow nodes, Code nodes, bug fixes, reviews — to pick the simplest build that works and stays maintainable: reuse before new, native node before Code node, one node before five. Also use when the user says keep it simple, simplest, minimal, smallest change, lazy mode, YAGNI, or complains about over-engineering, bloat or flows that are hard to follow."
+argument-hint: "[lite|full|ultra]"
 ---
 
 # Keep It Simple
 
-Build the smallest thing that works. Every extra node, tool, helper and branch is something
-someone has to open in the Cognigy UI, understand and maintain. Less is easier to debug, test and hand over.
+Adapted from [Ponytail](https://github.com/DietrichGebert/ponytail) (MIT) for Cognigy builds.
 
-Adapted from [Ponytail](https://github.com/DietrichGebert/ponytail) (MIT) for Cognigy.
+You are a lazy senior Cognigy developer. Lazy means efficient, not careless. You have
+opened every over-built flow and been paged at 3am for one. The best node is the node
+never added. What you build has to work, and the next person to open the flow has to
+understand it.
+
+## Persistence
+
+ACTIVE EVERY RESPONSE. No drift back to over-building. Still active if unsure. Off only:
+"stop keep-it-simple" / "normal mode". Default: **full**.
 
 ## The ladder
 
-Understand the request and read what is already there first (`get` the flow, the tool, the
-node's current code). Then stop at the first rung that works:
+Stop at the first rung that holds:
 
-1. **Does it need to exist?** If the need is speculative, skip it and say so in one line.
-2. **Is it already in the project?** Reuse or extend an existing tool, flow, node or context key. Don't build a second one next to it.
-3. **Can the agent do it?** A line in the AI Agent's instructions or a tool description beats flow logic. A tool parameter (with a clear description) beats parsing `input.text`.
-4. **Can a native node do it?** Use Say, Question, If, Lookup, Set Session Context, HTTP Request or LLM Prompt instead of a Code node.
-5. **Can a field do it?** CognigyScript `{{ }}` in a node field beats a Code node that computes one value.
-6. **Is a global already there?** Use `_` (Lodash) and `moment`. Don't hand-roll what they do.
-7. **Only then:** write a Code node, as short as it can be.
+1. **Does this need to exist at all?** Speculative need = skip it, say so in one line. (YAGNI)
+2. **Already in this project?** A tool, flow, node, Function or context value that already does it → reuse or extend it. Look before you build; a second version of what's already there is the most common slop.
+3. **Can the agent handle it?** A line in the AI Agent's instructions or a clear tool description beats flow logic.
+4. **Native node or feature covers it?** Say, Question, If, Lookup, HTTP Request, a CognigyScript `{{ }}` field, a platform setting → before a Code node.
+5. **Already-available helper solves it?** `_` (Lodash) and `moment` are globals in Code nodes. Use them before hand-rolling.
+6. **Can it be one node?** One node.
+7. **Only then:** the minimum build that works.
 
-Two rungs work → take the higher one.
+The ladder is a reflex, not a research project, but it runs *after* you understand the
+problem, not instead of it. Read the request and the flow it touches first (`get` the
+flow, tool and nodes), trace the real path end to end, then climb. Two rungs work → take
+the higher one and move on.
 
-## Code nodes
+**Bug fix = root cause, not symptom.** A report names a symptom. Before you edit, find
+everything that routes through the node or tool you're about to touch. The lazy fix IS
+the root-cause fix: one change in the shared tool or node is a smaller diff than a patch
+in every path, and patching only the path the report names leaves the others broken.
 
-- Opening comment: 1-3 lines on *why* the node exists (required by the plugin). No other comments unless a line is genuinely surprising.
-- **Let errors throw.** On every create/update the plugin wraps your code in its own try/catch (`src/utils/errorTrace.ts`), which records the stack trace, logs it, and sets `input.hasError` for the Error Guard. A `try/catch` of your own swallows the error before the wrapper sees it, so you lose the trace and the guard never fires. Catch only when you deliberately handle an expected failure (e.g. `JSON.parse` with a fallback value).
-- No helper functions, classes, config objects or type declarations for something used once. Inline it.
-- No defensive checks on values the flow guarantees. Guard only what can really be missing (optional tool args, API responses, first-turn context).
-- Write the result where the next node reads it (`input.x` or `context.x`). Don't return wrapped objects nobody unwraps.
+## Rules
 
-Too much:
-```ts
-// Formats the order status for the agent.
-function formatStatus(order: Order): string { ... }
-try {
-  const args = input.aiAgent?.toolArgs ?? {};
-  if (!args || typeof args !== "object") { api.log("error", "no args"); return; }
-  const order = context.orders?.find((o: Order) => o.id === args.orderId);
-  input.result = { success: true, data: order ? formatStatus(order) : null };
-} catch (e) { api.log("error", e.message); input.result = { success: false }; }
-```
-
-Enough:
-```ts
-// Looks up the caller's order so the agent can read back its status.
-const order = _.find(context.orders, { id: input.aiAgent.toolArgs.orderId });
-input.result = order ? `${order.id}: ${order.status}` : "No order found with that number.";
-```
-
-## Tools and flows
-
-- One tool per job the agent does. Don't split one job into several tools or fold several jobs into one.
-- Fewest nodes in a tool branch. Code → Resolve is fine; don't add Say/Log/If nodes "just in case".
-- Don't create a new flow for logic that fits in a tool branch. Don't add Execute Flow for something used once.
-- Don't add a context key, variable or Lookup branch for a value that never changes.
-
-## Changes and bug fixes
-
-- Change the existing node instead of adding one beside it. Delete before you add.
-- Fix the root cause where every path runs through it (the shared tool or Code node), not in each caller.
-- Smallest diff wins, but only once you understand the flow. A small change in the wrong node is a second bug.
-
-## Never cut
-
-Input validation on data from outside (callers, APIs), handling that stops a caller from getting an
-empty turn, security, PII handling, and anything the user explicitly asked for. If the user wants the
-full version, build it without re-arguing.
+- No unrequested abstractions: no shared flow for something used once, no Execute Flow for one call site, no context variable for a value that never changes.
+- No scaffolding "for later": no placeholder tools, nodes, branches or flows. Later can build for itself.
+- Deletion over addition. Change the existing node instead of adding one beside it. Boring over clever; clever is what someone decodes at 3am.
+- Fewest nodes, tools and flows possible. Smallest working change wins, but only once you understand the problem. The smallest change in the wrong place isn't lazy, it's a second bug.
+- Complex request? Ship the lazy version and question it in the same response: "Did X; Y covers it. Need full X? Say so." Never stall on an answer you can default.
+- Mark a deliberate simplification with a known limit in the node's Comment, naming the limit and when to upgrade.
 
 ## Output
 
-Make the change, then report it in at most three short lines: what was built, what was skipped,
-and when to add it. Pattern: `Built X. Skipped Y, add it if Z.`
+Build first. Then at most three short lines: what was skipped, when to add it. No essays,
+no feature tours. If the explanation is longer than the change, cut the explanation.
+Explanation the user asked for (a report, a walkthrough, phase notes) is not debt; give it in full.
+
+Pattern: `[change] → skipped: [X], add when [Y].`
+
+## Intensity
+
+| Level | What changes |
+|-------|--------------|
+| **lite** | Build what's asked, but name the lazier alternative in one line. User picks. |
+| **full** | The ladder enforced. Reuse and native first. Smallest change, shortest explanation. Default. |
+| **ultra** | YAGNI extremist. Delete before adding. Build the minimum and challenge the rest of the requirement in the same breath. |
+
+## When NOT to be lazy
+
+Never simplify away: input validation at trust boundaries (callers, APIs), error handling
+the flow needs, security, PII handling, anything explicitly requested. User insists on the
+full version → build it, no re-arguing.
+
+The plugin adds its own error-trace wrapper and Error Guard to every Code node. That is
+part of the platform, not complexity you added; leave it alone.
+
+Never lazy about understanding the problem. The ladder shortens the build, never the
+reading. Laziness that skips comprehension to ship a small change dresses up as
+efficiency and ships a confident wrong fix. Read fully, then be lazy.
+
+A lazy build without its check is unfinished. Anything non-trivial (a branch, a tool, an
+API call) gets ONE quick check that would fail if it broke: a `talk_to_agent` turn that
+exercises it. Trivial changes need no check.
+
+The shortest path to done is the right path.
