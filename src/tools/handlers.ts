@@ -16,6 +16,12 @@ import { pathToFileURL } from "url";
 import axios from "axios";
 import { applyProxyToRedirect, getProxyAxiosOptions } from "../utils/proxy.js";
 import { CognigyApiClient } from "../api/client.js";
+import {
+  endpointUrlFor,
+  hasEndpointToken,
+  toProductionEndpointUrl,
+  toTestModeEndpointUrl,
+} from "../utils/endpointUrl.js";
 import { logger } from "../utils/logger.js";
 import {
   filterResponse,
@@ -61,6 +67,7 @@ import {
   chartToMermaid,
   chartToHtml,
   chartLegend,
+  omitDisabled,
 } from "../render/flowRender.js";
 
 // The self-contained mermaid UMD build, inlined into rich flow-viz HTML so it
@@ -492,6 +499,7 @@ const TOOL_TYPE_MAP: Record<string, { type: string; extension: string }> = {
   send_email: { type: "sendEmailTool", extension: "@cognigy/basic-nodes" },
   mcp: { type: "aiAgentJobMCPTool", extension: "@cognigy/basic-nodes" },
   http: { type: "aiAgentJobTool", extension: "@cognigy/basic-nodes" },
+  a2a: { type: "aiAgentJobA2AAgent", extension: "@cognigy/basic-nodes" },
 };
 
 // Tool child descriptors when the parent is an LLM Prompt (llmPromptV2) node
@@ -509,7 +517,7 @@ const LLM_PROMPT_TOOL_TYPE_MAP: Record<
   http: { type: "llmPromptTool", extension: "@cognigy/basic-nodes" },
 };
 
-type ToolKind = "tool" | "knowledge" | "send_email" | "mcp";
+type ToolKind = "tool" | "knowledge" | "send_email" | "mcp" | "a2a";
 
 /**
  * The tool kind (create_tool's `toolType` vocabulary) that a tool node's chart
@@ -524,6 +532,7 @@ const TOOL_NODE_TYPE_KIND: Record<string, ToolKind> = {
   llmPromptMCPTool: "mcp",
   knowledgeTool: "knowledge",
   sendEmailTool: "send_email",
+  aiAgentJobA2AAgent: "a2a",
 };
 
 /** Tool-node config keys update_tool can PATCH, per tool kind. */
@@ -532,6 +541,8 @@ const TOOL_CONFIG_KEYS_BY_KIND: Record<ToolKind, string[]> = {
   knowledge: ["knowledgeStoreId", "toolId", "description", "topK"],
   send_email: ["toolId", "description", "recipient"],
   mcp: ["mcpName", "mcpServerUrl", "timeout"],
+  // The remaining A2A fields are applied by applyA2AToolConfig.
+  a2a: ["toolId", "timeout"],
 };
 
 /** Every tool-node config key, in the order they are mapped. */
@@ -555,6 +566,33 @@ const TOOL_NODE_CONFIG_KEYS = [
  * successful update that changed nothing.
  */
 const AI_AGENT_ONLY_CONFIG_KEYS = ["knowledgeStoreId", "topK", "recipient"];
+
+/**
+ * Config keys that exist only on an A2A Agent tool node (applied by
+ * applyA2AToolConfig). `timeout` is left out: MCP tools share it. Any of these
+ * in an update_tool request means the node's real type has to be read —
+ * without it the update falls back to the plain-tool keys and silently drops
+ * every A2A field.
+ */
+const A2A_ONLY_CONFIG_KEYS = [
+  "agentBaseUrl",
+  "agentCardPath",
+  "executionMode",
+  "taskTimeout",
+  "maxAutonomousTurns",
+  "toolFilter",
+  "whitelist",
+  "blacklist",
+  "authType",
+  "apiKeyConnection",
+  "apiKeyHeader",
+  "bearerConnection",
+  "basicConnection",
+  "oAuth2Connection",
+  "authForDiscovery",
+  "agentHeaders",
+  "cacheCard",
+];
 
 /**
  * Map the caller's tool config onto the node config keys the given tool kind
@@ -603,6 +641,7 @@ const RESOLVE_NODE_MAP: Record<string, { type: string; label: string } | null> =
     knowledge: null,
     send_email: null,
     http: null, // HTTP handles its own resolve node creation
+    a2a: { type: "aiAgentJobCallA2AAgent", label: "Call A2A Agent" },
   };
 
 /**
@@ -717,10 +756,54 @@ function buildHttpNodeConfig(http: {
   return cfg;
 }
 
+/**
+ * Copy A2A Agent tool config fields (shared by create_tool and update_tool)
+ * from the user-facing `cfg` object onto the raw node `nodeConfig`.
+ */
+function applyA2AToolConfig(nodeConfig: Record<string, any>, cfg: any): void {
+  if (cfg.agentBaseUrl) nodeConfig.agentBaseUrl = cfg.agentBaseUrl;
+  if (cfg.agentCardPath) nodeConfig.agentCardPath = cfg.agentCardPath;
+  if (cfg.timeout !== undefined) nodeConfig.timeout = cfg.timeout;
+  if (cfg.executionMode) nodeConfig.executionMode = cfg.executionMode;
+  if (cfg.taskTimeout !== undefined) nodeConfig.taskTimeout = cfg.taskTimeout;
+  if (cfg.maxAutonomousTurns !== undefined)
+    nodeConfig.maxAutonomousTurns = cfg.maxAutonomousTurns;
+  if (cfg.toolFilter) nodeConfig.toolFilter = cfg.toolFilter;
+  if (cfg.whitelist) nodeConfig.whitelist = cfg.whitelist;
+  if (cfg.blacklist) nodeConfig.blacklist = cfg.blacklist;
+  if (cfg.authType) nodeConfig.authType = cfg.authType;
+  if (cfg.apiKeyConnection) nodeConfig.apiKeyConnection = cfg.apiKeyConnection;
+  if (cfg.apiKeyHeader) nodeConfig.apiKeyHeader = cfg.apiKeyHeader;
+  if (cfg.bearerConnection) nodeConfig.bearerConnection = cfg.bearerConnection;
+  if (cfg.basicConnection) nodeConfig.basicConnection = cfg.basicConnection;
+  if (cfg.oAuth2Connection) nodeConfig.oAuth2Connection = cfg.oAuth2Connection;
+  if (cfg.authForDiscovery !== undefined)
+    nodeConfig.authForDiscovery = cfg.authForDiscovery;
+  if (cfg.agentHeaders) nodeConfig.agentHeaders = cfg.agentHeaders;
+  if (cfg.cacheCard !== undefined) nodeConfig.cacheCard = cfg.cacheCard;
+}
+
+/**
+ * manage_a2a_server only manages a2aServer endpoints. Any other channel would
+ * get A2A settings patched onto it, or A2A URLs fabricated from its token.
+ */
+function notA2AServerEndpoint(endpointId: string, channel: unknown): any {
+  return withHints(
+    {
+      error: `Endpoint ${endpointId} is a "${String(channel)}" endpoint, not an A2A server (a2aServer) endpoint.`,
+    },
+    {
+      action:
+        "Pass the endpointId of an a2aServer endpoint (list_resources { resourceType: 'endpoint', projectId }), or omit endpointId and pass projectId + flowId to create one. Use manage_webchat / manage_voice_gateway for those channels.",
+    },
+  );
+}
+
 const AI_AGENT_TOOL_TYPES = new Set([
   "aiAgentJobDefault",
   "aiAgentJobTool",
   "aiAgentJobMCPTool",
+  "aiAgentJobA2AAgent",
   "knowledgeTool",
   "handoverToAiAgentTool",
   "handoverToHumanAgentTool",
@@ -734,6 +817,7 @@ const AI_AGENT_TOOL_TYPES = new Set([
 const MCP_MANAGED_TOOL_TYPES = new Set([
   "aiAgentJobTool",
   "aiAgentJobMCPTool",
+  "aiAgentJobA2AAgent",
   "knowledgeTool",
   "sendEmailTool",
   "llmPromptTool",
@@ -1109,6 +1193,72 @@ export class TaskFailedError extends Error {
 // ---------------------------------------------------------------------------
 // ToolHandlers
 // ---------------------------------------------------------------------------
+
+/**
+ * Hints for a failed talk_to_agent request. Nothing is ever replayed
+ * automatically (see handleTalkToAgent), so the caller decides what to do, and
+ * the one thing every branch insists on is establishing whether the original
+ * message was processed BEFORE re-sending anything: a REST endpoint's Execution
+ * Finished transformer runs after the flow and can set any HTTP status, and a
+ * gateway timeout can hide a completed execution. Waiting or reusing the
+ * sessionId does not prevent a duplicate. Cognigy documents the
+ * 600-test-messages-per-hour cap but not how exceeding it is signalled, so no
+ * status is equated with "budget exhausted".
+ */
+function talkToAgentFailureHints(
+  status: number | undefined,
+  sessionId: string,
+  testMode: boolean,
+): Record<string, string> {
+  const checkOutcome = `FIRST establish whether the original message was processed: get_resource { resourceType: 'conversation', id: '${sessionId}' } returns the transcript when the endpoint collects conversations; otherwise continue this same sessionId with a neutral follow-up ("what did you just do?") or verify the side effects of the agent's tools. Re-send only if it was NOT processed.`;
+  const billable = testMode
+    ? " Re-sending with testMode: false is a billable production message and is not a way around an error: only after the outcome check, only once the test-mode cause is confirmed, and only with the user's explicit consent."
+    : "";
+  const warning =
+    "An HTTP error does not prove the message was not processed. A REST endpoint's Execution Finished transformer runs after the flow and can set any status, and a gateway timeout can hide a completed execution. A blind re-send can execute tools or advance the conversation twice; waiting or reusing the sessionId does not prevent that.";
+  const where = testMode ? "the test-mode URL" : "the endpoint";
+  const verifyEndpoint =
+    "verify the endpoint with list_resources { resourceType: 'endpoint' } (channel rest, URLToken present)";
+
+  let likely_cause: string;
+  let action: string;
+  if (status === undefined) {
+    likely_cause =
+      `Network-level failure (timeout, DNS, connection reset) before any HTTP response from ${where}.` +
+      (testMode
+        ? " This is not a test-mode rejection; the regular URL would fail the same way."
+        : "");
+    action = `${checkOutcome} Then check connectivity and the endpoint base URL before sending anything else.`;
+  } else if (status === 400) {
+    likely_cause =
+      "HTTP 400: Cognigy answers this for an unknown URL token and for an invalid payload; an Execution Finished transformer can also set it after the flow ran." +
+      (testMode ? " It does NOT by itself mean test mode is unsupported." : "");
+    action = `${checkOutcome} Then ${verifyEndpoint} and check the payload against detail.${billable}`;
+  } else if (status === 401 || status === 403) {
+    likely_cause = `HTTP ${status}: the platform refused the request (authorization, IP or WAF block, endpoint restriction), or a transformer set the status. Do not read it as an exhausted test-message budget; Cognigy does not document how that cap is signalled.`;
+    action = `${checkOutcome} Then fix the cause named in detail; it would apply to the regular URL too.${billable}`;
+  } else if (status === 404) {
+    likely_cause = testMode
+      ? "HTTP 404 has three possible meanings that the response alone cannot separate: the /test/ route does not exist (platform older than Cognigy 4.27), the URL token is unknown (the regular URL would 404 too), or an Execution Finished transformer returned 404 AFTER the flow ran."
+      : "HTTP 404: the URL token is unknown, the endpoint was deleted, or an Execution Finished transformer returned 404 after the flow ran.";
+    action = testMode
+      ? `${checkOutcome} Then confirm route absence independently before even considering a billable send: the Cognigy release is older than 4.27 (Admin Center or release notes), AND get_resource { resourceType: 'endpoint', id, raw: true } shows the URLToken matches and no Execution Finished transformer is enabled.${billable}`
+      : `${checkOutcome} Then ${verifyEndpoint}.`;
+  } else if (status === 429) {
+    likely_cause =
+      "HTTP 429: the platform is throttling this caller, either general rate limiting or the documented fair-use limit of 600 test messages per hour; Cognigy does not document which, nor the limit's scope.";
+    action = `${checkOutcome} Then pause before sending anything else. Do not switch to testMode: false to get around throttling.${billable}`;
+  } else if (status >= 500) {
+    likely_cause =
+      `HTTP ${status} from the endpoint or a gateway in front of it; the request may have reached the flow before failing.` +
+      (testMode ? " This is not evidence that test mode is unsupported." : "");
+    action = `${checkOutcome} Only if it was not processed, retry later in the same mode.${billable}`;
+  } else {
+    likely_cause = `Unexpected HTTP ${status} from ${where}. Read detail.`;
+    action = `${checkOutcome} Then ${verifyEndpoint}.${billable}`;
+  }
+  return { likely_cause, warning, action };
+}
 
 export class ToolHandlers {
   private static readonly SENSITIVE_KEYS = new Set([
@@ -3230,6 +3380,9 @@ export class ToolHandlers {
 
     // --- Endpoint resolution ---
     let endpointUrl: string | undefined = data.endpointUrl;
+    // Set when the handler resolved the endpoint itself; lets the request URL
+    // be built from base + token instead of inferred from a finished URL.
+    let resolvedToken: string | undefined;
     let endpointMeta: {
       autoCreated?: boolean;
       resolved?: boolean;
@@ -3310,8 +3463,9 @@ export class ToolHandlers {
       }
 
       if (existingEndpoint) {
-        endpointUrl = existingEndpoint.URLToken
-          ? `${this.endpointBaseUrl}/${existingEndpoint.URLToken}`
+        resolvedToken = existingEndpoint.URLToken || undefined;
+        endpointUrl = resolvedToken
+          ? `${this.endpointBaseUrl}/${resolvedToken}`
           : undefined;
         endpointMeta = {
           resolved: true,
@@ -3327,8 +3481,9 @@ export class ToolHandlers {
             flowId: flowRef,
             name: `${agent.name} REST Endpoint`,
           });
-          endpointUrl = endpoint.URLToken
-            ? `${this.endpointBaseUrl}/${endpoint.URLToken}`
+          resolvedToken = endpoint.URLToken || undefined;
+          endpointUrl = resolvedToken
+            ? `${this.endpointBaseUrl}/${resolvedToken}`
             : undefined;
           endpointMeta = {
             autoCreated: true,
@@ -3369,8 +3524,87 @@ export class ToolHandlers {
     const payload: any = { userId, sessionId, text: data.message };
     if (data.data) payload.data = data.data;
 
+    // Test mode (see utils/endpointUrl.ts) keeps plugin traffic out of the
+    // customer's billable conversation count, so it is the default. It is a
+    // pure URL variant, so the handler stays stateless.
+    //
+    // There is deliberately NO automatic fallback to the regular (billable)
+    // URL. An HTTP error from the test-mode URL never proves the message was
+    // not processed: a REST endpoint's Execution Finished transformer runs
+    // after the flow and can set any status (a 404 included), and a gateway
+    // timeout can hide a completed execution. Replaying would then execute
+    // tools or advance the conversation twice, against production, billed.
+    // Nor can route absence (platform older than Cognigy 4.27) be told apart
+    // from an unknown URL token or a transformer-set status by the response
+    // alone: the platform answers an empty 400 for an unknown token on either
+    // path. So a failure is returned with status-aware hints
+    // (talkToAgentFailureHints) that require the original outcome to be
+    // checked first, and a billable send only ever happens when the caller
+    // passes testMode: false.
+    //
+    // The request URL is built from base + token when the handler resolved the
+    // endpoint itself (exact, whatever path prefix the base carries). Only a
+    // caller-supplied URL goes through the segment-based helpers. Results carry
+    // the regular endpointUrl and a testMode flag; the test-mode URL is a
+    // transport detail and is never returned, so it cannot be handed on as
+    // "the endpoint URL".
+    const useTestMode = data.testMode !== false;
+    let targetUrl: string;
     try {
-      const response = await axios.post(endpointUrl!, payload, {
+      if (resolvedToken) {
+        endpointUrl = endpointUrlFor(
+          this.endpointBaseUrl,
+          resolvedToken,
+          false,
+        );
+        targetUrl = endpointUrlFor(
+          this.endpointBaseUrl,
+          resolvedToken,
+          useTestMode,
+        );
+      } else {
+        if (!hasEndpointToken(endpointUrl!)) {
+          return withHints(
+            {
+              error: "Endpoint URL has no URL token.",
+              endpointUrl,
+              sessionId,
+            },
+            {
+              likely_cause:
+                "Only the endpoint base URL was passed; a REST endpoint URL ends in the endpoint's URLToken.",
+              action:
+                "Pass the full endpointUrl from create_ai_agent or list_resources { resourceType: 'endpoint' } (channel rest), or pass aiAgentId instead.",
+            },
+          );
+        }
+        endpointUrl = toProductionEndpointUrl(endpointUrl!);
+        targetUrl = useTestMode
+          ? toTestModeEndpointUrl(endpointUrl)
+          : endpointUrl;
+      }
+    } catch (urlErr: any) {
+      // A caller-supplied endpointUrl is schema-validated, so this is almost
+      // always a malformed COGNIGY_ENDPOINT_BASE_URL. Return it structured
+      // instead of letting the URL parser's TypeError escape the tool.
+      return withHints(
+        {
+          error: "Endpoint URL is not a valid absolute URL.",
+          detail: urlErr?.message,
+          endpointUrl,
+          sessionId,
+        },
+        {
+          likely_cause:
+            "COGNIGY_ENDPOINT_BASE_URL is misconfigured (it must be an absolute https URL), or the endpointUrl argument is malformed.",
+          action:
+            "Check the endpoint base URL in the server configuration, or pass a full endpointUrl from list_resources { resourceType: 'endpoint' }.",
+        },
+      );
+    }
+
+    try {
+      const response = await axios.post(targetUrl, payload, {
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
@@ -3391,7 +3625,12 @@ export class ToolHandlers {
         .map((o: any) => o.text);
       if (textOutputs.length > 0) agentResponse = textOutputs.join(" ");
 
-      const result: any = { agentResponse, sessionId, endpointUrl };
+      const result: any = {
+        agentResponse,
+        sessionId,
+        endpointUrl,
+        testMode: useTestMode,
+      };
       if (endpointMeta.autoCreated) result.endpointAutoCreated = true;
       if (endpointMeta.resolved) result.endpointResolved = true;
 
@@ -3406,24 +3645,22 @@ export class ToolHandlers {
           action: "Read the troubleshooting guide for diagnostic steps.",
         });
       }
-
       return result;
     } catch (error: any) {
+      const status: number | undefined = error.response?.status;
       const detail =
         error.response?.data?.error ||
         error.response?.data?.message ||
         error.message;
       return withHints(
         {
-          error: `Request failed with status ${error.response?.status ?? "unknown"}`,
+          error: `Request failed with status ${status ?? "unknown"}`,
           detail,
           sessionId,
+          endpointUrl,
+          testMode: useTestMode,
         },
-        {
-          likely_cause: "Endpoint URL invalid or expired.",
-          action:
-            "Verify endpoint with list_resources { resourceType: 'endpoint' }.",
-        },
+        talkToAgentFailureHints(status, sessionId, useTestMode),
       );
     }
   }
@@ -4662,6 +4899,30 @@ export class ToolHandlers {
             node.name === requestedToolId),
       );
 
+      // Reusing is only right when the existing node is the same kind of
+      // tool. An A2A request that hit a plain/MCP/knowledge node (or the
+      // reverse) would report success while none of the requested config
+      // exists on the node.
+      if (
+        duplicateTool &&
+        (duplicateTool.type === "aiAgentJobA2AAgent") !==
+          (data.toolType === "a2a")
+      ) {
+        const existingKind =
+          TOOL_NODE_TYPE_KIND[duplicateTool.type] ?? duplicateTool.type;
+        return withHints(
+          {
+            error: `toolId "${requestedToolId}" already belongs to a different kind of tool in this agent flow (existing: "${existingKind}", requested: "${data.toolType}"), so it cannot be reused.`,
+            existingToolNodeId: duplicateTool._id || duplicateTool.id,
+            existingToolType: existingKind,
+          },
+          {
+            action:
+              "Choose a different toolId, or update/delete the existing tool first.",
+          },
+        );
+      }
+
       if (duplicateTool) {
         const duplicateToolNodeId = duplicateTool._id || duplicateTool.id;
         const duplicateParentId = nodeParentId(duplicateTool) ?? jobNodeId;
@@ -4684,7 +4945,9 @@ export class ToolHandlers {
                   : duplicateTool.type === "aiAgentJobMCPTool" ||
                       duplicateTool.type === "llmPromptMCPTool"
                     ? "mcp"
-                    : data.toolType,
+                    : duplicateTool.type === "aiAgentJobA2AAgent"
+                      ? "a2a"
+                      : data.toolType,
             reusedExisting: true,
           },
           {
@@ -4693,6 +4956,13 @@ export class ToolHandlers {
           },
         );
       }
+    }
+
+    if (data.toolType === "a2a" && !cfg.agentBaseUrl) {
+      return withHints(
+        { error: "agentBaseUrl is required in config for a2a tool type." },
+        { action: "Provide config.agentBaseUrl and retry." },
+      );
     }
 
     // Step 3: Create the tool node
@@ -4740,6 +5010,11 @@ export class ToolHandlers {
           nodeConfig.parameters = normalized.parameters;
           parameterWarnings = normalized.warnings;
         }
+        break;
+      case "a2a":
+        nodeConfig.name = data.name;
+        if (cfg.toolId) nodeConfig.toolId = cfg.toolId;
+        applyA2AToolConfig(nodeConfig, cfg);
         break;
     }
 
@@ -5094,11 +5369,21 @@ export class ToolHandlers {
     const requestedAiAgentOnlyKeys = cfg
       ? AI_AGENT_ONLY_CONFIG_KEYS.filter((key) => (cfg as any)[key])
       : [];
+    // A2A keys count when present at all — taskTimeout: 0 and cacheCard:
+    // false are real values.
+    const requestedA2AKeys = cfg
+      ? A2A_ONLY_CONFIG_KEYS.filter((key) => (cfg as any)[key] !== undefined)
+      : [];
+    // A rename needs the family too: an A2A node keeps its name in
+    // config.name as well as in the label, and both must change together.
     const needsNodeFamily =
-      !!cfg &&
-      (requestedAiAgentOnlyKeys.length > 0 ||
-        toolType === "knowledge" ||
-        toolType === "send_email");
+      (!!cfg &&
+        (requestedAiAgentOnlyKeys.length > 0 ||
+          requestedA2AKeys.length > 0 ||
+          toolType === "knowledge" ||
+          toolType === "send_email")) ||
+      toolType === "a2a" ||
+      !!data.name;
 
     let fetchedToolNode: any;
     if (needsNodeFamily) {
@@ -5122,10 +5407,15 @@ export class ToolHandlers {
         ? fetchedToolNode.type
         : undefined;
     // Dispatch on the node's real type; fall back to the caller's toolType,
-    // and to the plain-tool keys when it was omitted (as before).
+    // then to "a2a" when only A2A keys could have been meant, and to the
+    // plain-tool keys otherwise (as before).
     const effectiveKind: ToolKind =
       (nodeType ? TOOL_NODE_TYPE_KIND[nodeType] : undefined) ??
-      (toolType && toolType !== "http" ? (toolType as ToolKind) : "tool");
+      (toolType && toolType !== "http"
+        ? (toolType as ToolKind)
+        : requestedA2AKeys.length > 0
+          ? "a2a"
+          : "tool");
 
     // Step 1: Update the tool node itself (label and/or tool-node config)
     const patchPayload: any = {};
@@ -5133,13 +5423,19 @@ export class ToolHandlers {
     let ignoredConfigKeys: string[] = [];
     if (data.name) patchPayload.label = data.name;
 
+    const nodeConfig: Record<string, any> = {};
     if (cfg) {
       const mapped = buildToolNodeConfig(effectiveKind, cfg as any);
+      Object.assign(nodeConfig, mapped.nodeConfig);
+      if (effectiveKind === "a2a") applyA2AToolConfig(nodeConfig, cfg);
       parameterWarnings = mapped.parameterWarnings;
       ignoredConfigKeys = mapped.ignored;
-      if (Object.keys(mapped.nodeConfig).length > 0) {
-        patchPayload.config = mapped.nodeConfig;
-      }
+    }
+    // create_tool writes an A2A tool's name into config.name as well as the
+    // label; a rename that only changed the label would leave them apart.
+    if (effectiveKind === "a2a" && data.name) nodeConfig.name = data.name;
+    if (Object.keys(nodeConfig).length > 0) {
+      patchPayload.config = nodeConfig;
     }
 
     // Nothing the caller asked for can land on this node. Say so instead of
@@ -5527,6 +5823,7 @@ export class ToolHandlers {
             label: n.label,
             parentId: n.parentId ?? null,
             isEntryPoint: n.isEntryPoint ?? false,
+            ...(n.isDisabled ? { isDisabled: true } : {}),
           })),
         };
       }
@@ -6135,18 +6432,20 @@ export class ToolHandlers {
           );
           const items = list.items ?? list;
           if (Array.isArray(items)) {
-            const labelById = new Map<string, string>(
-              items.map((n: any) => [n._id || n.id, n.label]),
+            const byId = new Map<string, any>(
+              items.map((n: any) => [n._id || n.id, n]),
             );
             for (const n of chart.nodes ?? []) {
-              const id = n._id || n.id;
-              const lbl = labelById.get(id);
-              if (!n.label && lbl) n.label = lbl;
+              const listed = byId.get(n._id || n.id);
+              if (!n.label && listed?.label) n.label = listed.label;
+              if (listed?.isDisabled) n.isDisabled = true;
             }
           }
         } catch {
           // Labels are optional — the serializer falls back to preview/type.
         }
+        // Disabled nodes are skipped at runtime, so they are not drawn.
+        chart = omitDisabled(chart);
 
         const format = data.format ?? "both";
         const showLegend = data.legend ?? true;
@@ -6331,7 +6630,7 @@ export class ToolHandlers {
     }
 
     // UPDATE: patch existing endpoint
-    if (!data.name && !hasSettings) {
+    if (!data.name && !data.flowId && !hasSettings) {
       const ep = await this.safeGetEndpoint(endpointId);
       if (ep) {
         return this.buildWebchatResponse({
@@ -6387,6 +6686,274 @@ export class ToolHandlers {
         },
       );
     }
+  }
+
+  // =========================================================================
+  // Tool 17: manage_a2a_server
+  // =========================================================================
+  async handleManageA2AServer(args: any): Promise<any> {
+    const data = schemas.manageA2AServerSchema.parse(args);
+
+    const settings: Record<string, any> = {};
+    if (data.agentName !== undefined) settings.agentName = data.agentName;
+    if (data.agentDescription !== undefined)
+      settings.agentDescription = data.agentDescription;
+    if (data.skills !== undefined) settings.skills = data.skills;
+    if (data.enableStreaming !== undefined)
+      settings.enableStreaming = data.enableStreaming;
+    if (data.authenticationType !== undefined) {
+      settings.a2aServerEndpointAuthentication = {
+        authenticationType: data.authenticationType,
+      };
+    }
+    const hasSettings = Object.keys(settings).length > 0;
+
+    let endpointId = data.endpointId ?? null;
+
+    // CREATE when no endpointId provided, UPDATE when endpointId is explicit
+    if (!endpointId) {
+      if (!data.projectId) {
+        return withHints(
+          { error: "projectId is required to create an A2A server endpoint." },
+          {
+            action:
+              "Provide projectId. Use list_resources { resourceType: 'project' } to find one.",
+          },
+        );
+      }
+      if (!data.flowId) {
+        return withHints(
+          {
+            error:
+              "flowId is required to create an A2A server endpoint. To update an existing one, provide endpointId instead.",
+          },
+          {
+            action:
+              "Provide flowId. Use list_resources { resourceType: 'flow', projectId } to find one, or create an agent first with create_ai_agent.",
+          },
+        );
+      }
+
+      const localeId = await resolveEndpointLocaleId(
+        this.apiClient,
+        data.projectId,
+        data.flowId,
+      );
+
+      const createPayload: any = {
+        projectId: data.projectId,
+        entrypoint: data.projectId,
+        channel: "a2aServer",
+        flowId: data.flowId,
+        name: data.name || "A2A Server",
+        targetType: "flow",
+        agentId: "",
+      };
+      if (localeId) createPayload.localeId = localeId;
+
+      try {
+        const createdEndpoint: any = await this.apiClient.post(
+          "/v2.0/endpoints",
+          createPayload,
+        );
+        endpointId = createdEndpoint._id || createdEndpoint.id;
+      } catch (error: any) {
+        return withHints(
+          { error: `Failed to create A2A server endpoint: ${error.message}` },
+          {
+            action: "Check projectId and flowId, then retry.",
+          },
+        );
+      }
+
+      // The endpoint exists from here on. A failure below must not read as
+      // "creation failed" — a retry of the create would make a duplicate.
+      try {
+        let endpoint: any = await this.apiClient.get(
+          `/v2.0/endpoints/${endpointId}`,
+        );
+
+        let settingsApplied = false;
+        if (hasSettings) {
+          try {
+            const mergedSettings = deepMerge(endpoint.settings ?? {}, settings);
+            await this.apiClient.patch(`/v2.0/endpoints/${endpointId}`, {
+              settings: mergedSettings,
+            });
+            endpoint = await this.apiClient.get(
+              `/v2.0/endpoints/${endpointId}`,
+            );
+            settingsApplied = true;
+          } catch {
+            // Settings patch failed but endpoint was created — continue
+          }
+        }
+
+        const response = await this.buildA2AServerResponse({
+          created: true,
+          endpointId: endpointId!,
+          endpoint,
+        });
+        if (hasSettings && !settingsApplied) {
+          return withHints(response, {
+            warning: "Endpoint created but settings failed to apply.",
+            action: `Retry settings by calling manage_a2a_server { endpointId: "${endpointId}", ...settings }`,
+          });
+        }
+        return response;
+      } catch (error: any) {
+        return withHints(
+          {
+            created: true,
+            endpointId,
+            name: createPayload.name,
+            channel: "a2aServer",
+            error: `Endpoint created, but reading it back failed: ${error.message}`,
+          },
+          {
+            warning:
+              "The A2A server endpoint WAS created. Do not retry the create — that would add a second endpoint.",
+            action: `Call manage_a2a_server { endpointId: "${endpointId}" } to get its agentBaseUrl and live check${
+              hasSettings ? ", passing the Agent Card settings again" : ""
+            }.`,
+          },
+        );
+      }
+    }
+
+    // UPDATE: patch existing endpoint
+    if (!data.name && !data.flowId && !hasSettings) {
+      const ep = await this.safeGetEndpoint(endpointId);
+      if (ep && ep.channel !== "a2aServer") {
+        return notA2AServerEndpoint(endpointId!, ep.channel);
+      }
+      if (ep) {
+        return await this.buildA2AServerResponse({
+          endpointId: endpointId!,
+          endpoint: ep,
+          note: "No changes requested. Returning current endpoint info.",
+        });
+      }
+      return withHints(
+        {
+          error:
+            "Nothing to update. Provide at least one of name, agentName, agentDescription, skills, enableStreaming, authenticationType.",
+        },
+        { action: "Include fields to update." },
+      );
+    }
+
+    try {
+      const fullEndpoint: any = await this.apiClient.get(
+        `/v2.0/endpoints/${endpointId}`,
+      );
+      if (fullEndpoint?.channel !== "a2aServer") {
+        return notA2AServerEndpoint(endpointId!, fullEndpoint?.channel);
+      }
+      const existingSettings = fullEndpoint.settings ?? {};
+      const mergedSettings = deepMerge(existingSettings, settings);
+
+      const patchPayload: any = { settings: mergedSettings };
+      if (data.name) patchPayload.name = data.name;
+      if (data.flowId) patchPayload.flowId = data.flowId;
+
+      await this.apiClient.patch(`/v2.0/endpoints/${endpointId}`, patchPayload);
+      const endpoint: any = await this.apiClient.get(
+        `/v2.0/endpoints/${endpointId}`,
+      );
+
+      return await this.buildA2AServerResponse({
+        updated: true,
+        endpointId: endpointId!,
+        endpoint,
+      });
+    } catch (error: any) {
+      return withHints(
+        { error: `Failed to update A2A server endpoint: ${error.message}` },
+        { action: "Verify endpointId and settings, then retry." },
+      );
+    }
+  }
+
+  /**
+   * GET the Agent Card and report whether the A2A server is actually alive.
+   * Fire-and-report rather than fire-and-forget: never throws, just reduces
+   * to { reachable: false, error } so a dead agent never blocks the response.
+   */
+  private async checkA2AAgentCard(agentCardUrl: string): Promise<{
+    reachable: boolean;
+    agentName?: string;
+    skills?: string[];
+    error?: string;
+  }> {
+    try {
+      // Endpoint traffic does not go through CognigyApiClient, so it needs the
+      // proxy wiring of its own (same as talk_to_agent).
+      const res = await axios.get(agentCardUrl, {
+        timeout: 5000,
+        ...getProxyAxiosOptions(agentCardUrl),
+        beforeRedirect: applyProxyToRedirect,
+      });
+      const card = res.data ?? {};
+      return {
+        reachable: true,
+        agentName: card.name,
+        skills: Array.isArray(card.skills)
+          ? card.skills.map((s: any) => s.id ?? s.name)
+          : undefined,
+      };
+    } catch (error: any) {
+      return {
+        reachable: false,
+        error: error.response ? `HTTP ${error.response.status}` : error.message,
+      };
+    }
+  }
+
+  private async buildA2AServerResponse(opts: {
+    created?: boolean;
+    updated?: boolean;
+    endpointId: string;
+    endpoint: any;
+    note?: string;
+  }): Promise<any> {
+    const { endpoint } = opts;
+    // The a2aServer channel is served under a distinct /a2a/v1/ path prefix —
+    // unlike every other channel (rest, webchat3, mcpServer, ...), which are
+    // served directly at endpointBaseUrl/<URLToken>. Getting this wrong is a
+    // silent 404 on both discovery and every subsequent task call.
+    const agentBaseUrl =
+      endpoint.URLToken && this.endpointBaseUrl
+        ? `${this.endpointBaseUrl}/a2a/v1/${endpoint.URLToken}`
+        : undefined;
+    const agentCardUrl = agentBaseUrl
+      ? `${agentBaseUrl}/.well-known/agent.json`
+      : undefined;
+    const authenticationType =
+      endpoint.settings?.a2aServerEndpointAuthentication?.authenticationType;
+
+    const result: any = {};
+    if (opts.created) result.created = true;
+    if (opts.updated) result.updated = true;
+    result.endpointId = opts.endpointId;
+    result.name = endpoint.name;
+    result.channel = endpoint.channel;
+    result.agentBaseUrl = agentBaseUrl;
+    result.agentCardUrl = agentCardUrl;
+    result.settings = {
+      agentName: endpoint.settings?.agentName,
+      agentDescription: endpoint.settings?.agentDescription,
+      skills: endpoint.settings?.skills,
+      enableStreaming: endpoint.settings?.enableStreaming,
+      authenticationType,
+    };
+    if (agentCardUrl) {
+      // Agent Card discovery is open even when the endpoint requires an API
+      // key (the key guards message requests only), so always probe.
+      result.liveCheck = await this.checkA2AAgentCard(agentCardUrl);
+    }
+    if (opts.note) result.note = opts.note;
+    return result;
   }
 
   /**
@@ -8247,6 +8814,9 @@ export class ToolHandlers {
           break;
         case "manage_voice_gateway":
           result = await this.handleManageVoiceGateway(args);
+          break;
+        case "manage_a2a_server":
+          result = await this.handleManageA2AServer(args);
           break;
         case "manage_settings":
           result = await this.handleManageSettings(args);

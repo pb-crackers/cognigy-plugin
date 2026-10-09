@@ -8,7 +8,7 @@ A plugin that connects your AI assistant to the [Cognigy.AI](https://www.cognigy
 
 ## Features
 
-- **18 workflow tools** for flow building, agent creation, deployment, packaging, backup, and voice setup
+- **18 workflow tools** for flow building, agent creation, deployment, packaging, backup, voice setup, and agent-to-agent (A2A) delegation
 - **Flow building without an agent**: create standalone Flows (shared subroutines, error handlers, classic Node dialogs) and chain nodes onto them directly
 - **One-call agent setup**: creates Agent + Flow + AI Agent Job Node + REST Endpoint automatically
 - **Self-improvement loop**: talk to your agent, evaluate responses, update the job description, repeat
@@ -121,6 +121,9 @@ A value that arrives as an unexpanded `${...}` placeholder counts as missing. Ho
 | `NO_PROXY`                          | No       | unset   | Comma-separated hosts to reach directly, bypassing the proxy   |
 | `NODE_EXTRA_CA_CERTS`               | No       | unset   | Path to your corporate root CA, for TLS-inspecting proxies     |
 | `COGNIGY_PROXY_CONNECT_TIMEOUT_MS`  | No       | `30000` | Deadline for reaching the proxy and completing the tunnel      |
+| `COGNIGY_ENDPOINT_BASE_URL`         | No       | derived | Endpoint host, when it cannot be derived from the API host     |
+| `COGNIGY_WEBCHAT_BASE_URL`          | No       | derived | Webchat host, when it cannot be derived from the API host      |
+| `COGNIGY_STATIC_FILES_BASE_URL`     | No       | derived | Static-files host, when it cannot be derived from the API host |
 
 ### Audit attribution
 
@@ -153,6 +156,12 @@ A proxy that accepts the connection and then never completes the tunnel would ot
 **If your proxy inspects TLS** (Zscaler, Netskope, BlueCoat and similar), it presents its own certificate signed by a corporate root CA that Node does not trust by default. Point `NODE_EXTRA_CA_CERTS` at that CA file — Node reads it only at startup, so restart your client afterwards. Never set `NODE_TLS_REJECT_UNAUTHORIZED=0` instead; that disables certificate verification for every connection the engine makes.
 
 To confirm the engine picked the settings up, set `LOG_LEVEL=debug` and look for `Cognigy API requests route through a proxy` in your client's MCP log. GUI clients (Claude Desktop, Antigravity) start the engine with a minimal environment and often do not inherit your shell's proxy variables, so set them in the config file rather than your shell profile.
+
+### Self-hosted and local clusters
+
+The engine talks to more than one Cognigy host: the API for everything, the endpoint host for `talk_to_agent`, and the webchat and static hosts for embed snippets. The other three are derived from `COGNIGY_API_BASE_URL` by swapping its `api` segment — `api-dev.cognigy.ai` gives `endpoint-dev.cognigy.ai`, `cognigy-api-na1.nicecxone.com` gives `cognigy-endpoint-na1.nicecxone.com`, and a local cluster's `api.test` gives `endpoint.test`. If your hostnames follow no such pattern, set `COGNIGY_ENDPOINT_BASE_URL`, `COGNIGY_WEBCHAT_BASE_URL` and `COGNIGY_STATIC_FILES_BASE_URL` explicitly; the engine warns at startup (`Could not derive the endpoint host`) when it had to fall back to the API host.
+
+A cluster that serves a self-signed certificate is rejected with `DEPTH_ZERO_SELF_SIGNED_CERT`, because Node does not consult the operating-system trust store. Point `NODE_EXTRA_CA_CERTS` at the certificate (or the local CA that issued it), exactly as for a TLS-inspecting proxy above.
 
 ## Usage Examples
 
@@ -280,27 +289,28 @@ IDs before falling back to `setup_llm`.
 
 ## Tools
 
-| Tool                   | Type  | Description                                                                                         |
-| ---------------------- | ----- | --------------------------------------------------------------------------------------------------- |
-| `create_ai_agent`      | Write | Create a complete AI Agent with auto-provisioned flow, job node, and REST endpoint                  |
-| `update_ai_agent`      | Write | Update persona, guardrails, job config (role, procedures, LLM, temperature)                         |
-| `setup_llm`            | Write | Create an LLM resource (GPT-4, Claude, Mistral, etc.) with automatic connection validation          |
-| `talk_to_agent`        | Write | Send a message to an AI Agent and get its response                                                  |
-| `list_resources`       | Read  | List projects, agents, flows, endpoints, LLMs, knowledge stores, and more                           |
-| `get_resource`         | Read  | Get detailed information about a single resource                                                    |
-| `delete_resource`      | Write | Permanently delete a resource                                                                       |
-| `manage_knowledge`     | Write | Create knowledge stores, add sources (URL, text, file), list chunks for RAG                         |
-| `create_tool`          | Write | Add a tool (HTTP, knowledge, email, MCP) to an agent's job node                                     |
-| `update_tool`          | Write | Update an existing tool node's configuration                                                        |
-| `manage_webchat`       | Write | Create or configure a Webchat v3 endpoint for website deployment                                    |
-| `manage_flow_nodes`    | Write | Create, update, delete, or list flow nodes for conversation logic                                   |
-| `manage_packages`      | Write | List exportable resources, upload, inspect, import, export, and download Cognigy package zip files  |
-| `manage_voice_gateway` | Write | Create or configure a Voice Gateway endpoint with WebRTC for browser-based voice interaction        |
-| `manage_settings`      | Write | Manage project-level settings including voice preview and Knowledge AI configuration                |
-| `audit_voice_agent`    | Write | Audit a voice agent against the Go-Live Checklist; reports by default, applies safe fixes on demand |
-| `manage_snapshots`     | Write | Create and restore project Snapshots so agent changes can be rolled back                            |
+| Tool                   | Type  | Description                                                                                                    |
+| ---------------------- | ----- | -------------------------------------------------------------------------------------------------------------- |
+| `create_ai_agent`      | Write | Create a complete AI Agent with auto-provisioned flow, job node, and REST endpoint                             |
+| `update_ai_agent`      | Write | Update persona, guardrails, job config (role, procedures, LLM, temperature)                                    |
+| `setup_llm`            | Write | Create an LLM resource (GPT-4, Claude, Mistral, etc.) with automatic connection validation                     |
+| `talk_to_agent`        | Write | Send a message to an AI Agent and get its response (uses Endpoint Test Mode, so it is not counted as billable) |
+| `list_resources`       | Read  | List projects, agents, flows, endpoints, LLMs, knowledge stores, and more                                      |
+| `get_resource`         | Read  | Get detailed information about a single resource                                                               |
+| `delete_resource`      | Write | Permanently delete a resource                                                                                  |
+| `manage_knowledge`     | Write | Create knowledge stores, add sources (URL, text, file), list chunks for RAG                                    |
+| `create_tool`          | Write | Add a tool (HTTP, knowledge, email, MCP, A2A) to an agent's job node                                           |
+| `update_tool`          | Write | Update an existing tool node's configuration                                                                   |
+| `manage_webchat`       | Write | Create or configure a Webchat v3 endpoint for website deployment                                               |
+| `manage_flow_nodes`    | Write | Create, update, delete, or list flow nodes for conversation logic                                              |
+| `manage_packages`      | Write | List exportable resources, upload, inspect, import, export, and download Cognigy package zip files             |
+| `manage_voice_gateway` | Write | Create or configure a Voice Gateway endpoint with WebRTC for browser-based voice interaction                   |
+| `manage_a2a_server`    | Write | Deploy a Flow as an A2A (Agent2Agent) server endpoint that other agents can discover and call                  |
+| `manage_settings`      | Write | Manage project-level settings including voice preview and Knowledge AI configuration                           |
+| `audit_voice_agent`    | Write | Audit a voice agent against the Go-Live Checklist; reports by default, applies safe fixes on demand            |
+| `manage_snapshots`     | Write | Create and restore project Snapshots so agent changes can be rolled back                                       |
 
-Detailed workflow guidance (agent creation, knowledge/RAG, voice, webchat, flow nodes, packages, settings, LLM providers, tools, troubleshooting) ships as **skills** that load automatically when your request matches, in clients that support them (e.g. Claude Code) — see the **Skills** column in the client table under [Installation](#installation).
+Detailed workflow guidance (agent creation, knowledge/RAG, voice, webchat, A2A, flow nodes, packages, settings, LLM providers, tools, troubleshooting) ships as **skills** that load automatically when your request matches, in clients that support them (e.g. Claude Code) — see the **Skills** column in the client table under [Installation](#installation).
 
 ## Security
 
