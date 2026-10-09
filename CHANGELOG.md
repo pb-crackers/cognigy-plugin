@@ -1,3 +1,27 @@
+## [1.22.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.21.0...v1.22.0) (2026-10-09)
+
+### Features
+
+* **tools:** add A2A agent-to-agent delegation support ([#53](https://github.com/Cognigy/cognigy-plugin/issues/53)) ([16ff421](https://github.com/Cognigy/cognigy-plugin/commit/16ff42186893a2ed1e68df4d27160b23c8ac3522))
+
+## [1.21.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.20.1...v1.21.0) (2026-10-01)
+
+### Features
+
+* **flow-nodes:** show disabled nodes in list and omit them from render ([#51](https://github.com/Cognigy/cognigy-plugin/issues/51)) ([c8179e3](https://github.com/Cognigy/cognigy-plugin/commit/c8179e3c3da8ffbd696dc5e897afe6d74c8635dd))
+
+## [1.20.1](https://github.com/Cognigy/cognigy-plugin/compare/v1.20.0...v1.20.1) (2026-09-22)
+
+### Bug Fixes
+
+* **config:** derive sibling hosts when "api" is a whole DNS label ([#49](https://github.com/Cognigy/cognigy-plugin/issues/49)) ([ce778b5](https://github.com/Cognigy/cognigy-plugin/commit/ce778b576ad909e6f7fcac5d4328615d0d17afa8))
+
+## [1.20.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.19.0...v1.20.0) (2026-09-21)
+
+### Features
+
+* **tools:** send talk_to_agent messages in Cognigy Endpoint Test Mode ([#46](https://github.com/Cognigy/cognigy-plugin/issues/46)) ([96d1b52](https://github.com/Cognigy/cognigy-plugin/commit/96d1b524598d9e9376b17419504cc076fc18fde2))
+
 ## [1.19.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.18.0...v1.19.0) (2026-09-15)
 
 ### Features

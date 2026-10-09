@@ -262,6 +262,7 @@ export const talkToAgentSchema = z
     userId: z.string().optional(),
     data: z.record(z.any()).optional(),
     verbose: z.boolean().optional(),
+    testMode: z.boolean().optional(),
   })
   .refine((d) => d.endpointUrl || d.aiAgentId, {
     message: "Either endpointUrl or aiAgentId must be provided",
@@ -422,12 +423,32 @@ export const manageKnowledgeSchema = z.object({
 });
 
 // Tool 9: create_tool (includes http tool type, formerly create_custom_http_tool)
+const a2aToolConfigSchema = {
+  agentBaseUrl: z.string().optional(),
+  agentCardPath: z.string().optional(),
+  executionMode: z.string().optional(),
+  taskTimeout: z.number().optional(),
+  maxAutonomousTurns: z.number().int().optional(),
+  toolFilter: z.enum(["none", "whitelist", "blacklist"]).optional(),
+  whitelist: z.array(z.string()).optional(),
+  blacklist: z.array(z.string()).optional(),
+  authType: z.enum(["none", "apiKey", "bearer", "basic", "oAuth2"]).optional(),
+  apiKeyConnection: z.string().optional(),
+  apiKeyHeader: z.string().optional(),
+  bearerConnection: z.string().optional(),
+  basicConnection: z.string().optional(),
+  oAuth2Connection: z.string().optional(),
+  authForDiscovery: z.boolean().optional(),
+  agentHeaders: z.string().optional(),
+  cacheCard: z.boolean().optional(),
+};
+
 export const createToolSchema = z
   .object({
     aiAgentId: idSchema.optional(),
     flowId: idSchema.optional(),
     parentNodeId: idSchema.optional(),
-    toolType: z.enum(["tool", "knowledge", "send_email", "mcp", "http"]),
+    toolType: z.enum(["tool", "knowledge", "send_email", "mcp", "http", "a2a"]),
     name: z.string().min(1).max(200),
     config: z.object({
       toolId: z.string().optional(),
@@ -450,6 +471,7 @@ export const createToolSchema = z
       errorGuard: z.boolean().optional(),
       // set false to skip the generated tool-call Log node
       logToolCalls: z.boolean().optional(),
+      ...a2aToolConfigSchema,
     }),
   })
   .refine((d) => d.aiAgentId || d.flowId, {
@@ -469,7 +491,7 @@ export const updateToolSchema = z
     toolNodeId: idSchema,
     name: z.string().min(1).max(200).optional(),
     toolType: z
-      .enum(["tool", "knowledge", "send_email", "mcp", "http"])
+      .enum(["tool", "knowledge", "send_email", "mcp", "http", "a2a"])
       .optional(),
     config: z
       .object({
@@ -495,6 +517,7 @@ export const updateToolSchema = z
         preProcessNodeId: idSchema.optional(),
         postProcessNodeId: idSchema.optional(),
         resolveNodeId: idSchema.optional(),
+        ...a2aToolConfigSchema,
       })
       .optional(),
   })
@@ -1004,3 +1027,30 @@ export const manageSnapshotsSchema = z.discriminatedUnion("operation", [
     taskId: idSchema,
   }),
 ]);
+
+// Tool 18: manage_a2a_server
+const a2aSkillSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional(),
+});
+
+export const manageA2AServerSchema = z.object({
+  endpointId: idSchema.optional(),
+  projectId: idSchema.optional(),
+  flowId: z.string().optional(),
+  name: z.string().min(1).max(200).optional(),
+  agentName: z.string().optional(),
+  agentDescription: z.string().optional(),
+  skills: z
+    .array(a2aSkillSchema)
+    .refine(
+      (skills) => new Set(skills.map((s) => s.id)).size === skills.length,
+      {
+        message: "Each skill id must be unique within the Agent Card",
+      },
+    )
+    .optional(),
+  enableStreaming: z.boolean().optional(),
+  authenticationType: z.enum(["none", "apiKey"]).optional(),
+});
